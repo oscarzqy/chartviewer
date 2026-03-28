@@ -1,4 +1,5 @@
-const BASE = '/api'
+const API = '/api'
+const AUTH = '/auth'
 
 /**
  * Compute a sensible [start, end] date range for a given interval and center date.
@@ -27,28 +28,95 @@ export function windowForInterval(interval, centerDate) {
   }
 }
 
-export async function fetchOHLC(symbol, interval, start, end) {
-  const params = new URLSearchParams({ symbol, interval, start, end })
-  const res = await fetch(`${BASE}/ohlc?${params}`)
+function getAuthHeader() {
+  const token = localStorage.getItem('cv_token')
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+async function request(url, options = {}) {
+  const res = await fetch(url, {
+    ...options,
+    headers: { ...options.headers, ...getAuthHeader() },
+  })
+  if (res.status === 401) {
+    const err = new Error('Session expired — please sign in again')
+    err.status = 401
+    throw err
+  }
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `HTTP ${res.status}`)
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `HTTP ${res.status}`)
   }
   return res.json()
 }
 
-export async function fetchWatchlist() {
-  const res = await fetch(`${BASE}/watchlist`)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+export async function login(username, password) {
+  const res = await fetch(`${AUTH}/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `HTTP ${res.status}`)
+  }
   return res.json()
 }
 
+export async function register(username, password, invite_token) {
+  const res = await fetch(`${AUTH}/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, invite_token }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function fetchMe() {
+  return request(`${AUTH}/me`)
+}
+
+export async function createInvite() {
+  return request(`${AUTH}/invite`, { method: 'POST' })
+}
+
+// ── OHLC ──────────────────────────────────────────────────────────────────────
+
+export async function fetchOHLC(symbol, interval, start, end) {
+  const params = new URLSearchParams({ symbol, interval, start, end })
+  return request(`${API}/ohlc?${params}`)
+}
+
+// ── Watchlist ─────────────────────────────────────────────────────────────────
+
+export async function fetchWatchlist() {
+  return request(`${API}/watchlist`)
+}
+
 export async function saveWatchlist(symbols) {
-  const res = await fetch(`${BASE}/watchlist`, {
+  return request(`${API}/watchlist`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ symbols }),
   })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+}
+
+// ── Preferences ───────────────────────────────────────────────────────────────
+
+export async function fetchPreferences() {
+  return request(`${API}/preferences`)
+}
+
+export async function savePreferences(prefs) {
+  return request(`${API}/preferences`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(prefs),
+  })
 }

@@ -3,19 +3,69 @@ import Chart from './components/Chart.jsx'
 import Toolbar from './components/Toolbar.jsx'
 import TickerList from './components/TickerList.jsx'
 import Toast from './components/Toast.jsx'
-import { fetchOHLC, fetchWatchlist, saveWatchlist, windowForInterval } from './api.js'
+import AuthPage from './components/AuthPage.jsx'
+import InviteButton from './components/InviteButton.jsx'
+import {
+  fetchOHLC,
+  fetchWatchlist,
+  saveWatchlist,
+  fetchPreferences,
+  savePreferences,
+  fetchMe,
+  windowForInterval,
+} from './api.js'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
 export default function App() {
+  const [token, setToken] = useState(() => localStorage.getItem('cv_token'))
+  const [prefsLoaded, setPrefsLoaded] = useState(false)
+  const [currentUser, setCurrentUser] = useState(null)
+
   const [tickers, setTickers] = useState([])
-  const [activeTicker, setActiveTicker] = useState(() => localStorage.getItem('cv_ticker') || null)
-  const [interval, setInterval] = useState(() => localStorage.getItem('cv_interval') || '1h')
-  const [date, setDate] = useState(() => localStorage.getItem('cv_date') || today())
+  const [activeTicker, setActiveTicker] = useState(null)
+  const [interval, setInterval] = useState('1h')
+  const [date, setDate] = useState(today())
   const [bars, setBars] = useState(null)
   const [loading, setLoading] = useState(false)
   const [toast, setToast] = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+
+  const handleSessionExpired = () => {
+    localStorage.removeItem('cv_token')
+    setToken(null)
+    setPrefsLoaded(false)
+    setCurrentUser(null)
+  }
+
+  // Load preferences and watchlist once token is available
+  useEffect(() => {
+    if (!token) return
+    fetchPreferences()
+      .then((prefs) => {
+        if (prefs.ticker) setActiveTicker(prefs.ticker)
+        if (prefs.interval) setInterval(prefs.interval)
+        if (prefs.date) setDate(prefs.date)
+        setPrefsLoaded(true)
+      })
+      .catch((e) => {
+        if (e.status === 401) handleSessionExpired()
+        else setPrefsLoaded(true) // still show the app even if prefs fail
+      })
+    fetchWatchlist()
+      .then((data) => {
+        setTickers(data.symbols)
+        if (!activeTicker && data.symbols.length > 0) {
+          setActiveTicker(data.symbols[0].ticker)
+        }
+      })
+      .catch((e) => {
+        if (e.status === 401) handleSessionExpired()
+      })
+    fetchMe()
+      .then(setCurrentUser)
+      .catch(() => {})
+  }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadData = useCallback(async () => {
     if (!activeTicker) return
@@ -25,30 +75,30 @@ export default function App() {
       const result = await fetchOHLC(activeTicker, interval, start, end)
       setBars(result.bars)
     } catch (e) {
-      setToast(e.message)
-      setBars([])
+      if (e.status === 401) handleSessionExpired()
+      else { setToast(e.message); setBars([]) }
     } finally {
       setLoading(false)
     }
-  }, [activeTicker, interval, date])
+  }, [activeTicker, interval, date]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    loadData()
-  }, [loadData])
-
-  // Load watchlist from backend on first mount
-  useEffect(() => {
-    fetchWatchlist().then((data) => {
-      setTickers(data.symbols)
-      const saved = localStorage.getItem('cv_ticker')
-      const inList = data.symbols.find((t) => t.ticker === saved)
-      if (!inList && data.symbols.length > 0) setActiveTicker(data.symbols[0].ticker)
-    }).catch(() => {})
-  }, [])
+    if (prefsLoaded) loadData()
+  }, [loadData, prefsLoaded])
 
   const handleSelect = (ticker) => {
     setActiveTicker(ticker)
-    localStorage.setItem('cv_ticker', ticker)
+    if (prefsLoaded) savePreferences({ ticker, interval, date }).catch(() => {})
+  }
+
+  const handleIntervalChange = (v) => {
+    setInterval(v)
+    if (prefsLoaded) savePreferences({ ticker: activeTicker, interval: v, date }).catch(() => {})
+  }
+
+  const handleDateChange = (v) => {
+    setDate(v)
+    if (prefsLoaded) savePreferences({ ticker: activeTicker, interval, date: v }).catch(() => {})
   }
 
   const handleAdd = (ticker) => {
@@ -73,6 +123,9 @@ export default function App() {
     setTickers(reordered)
     saveWatchlist(reordered).catch(() => setToast('Failed to save watchlist'))
   }
+
+  if (!token) return <AuthPage onLogin={setToken} />
+  if (!prefsLoaded) return null
 
   const activeLabel = tickers.find((t) => t.ticker === activeTicker)?.label ?? activeTicker
 
@@ -107,10 +160,16 @@ export default function App() {
           <span style={symbolNameStyle}>{activeLabel}</span>
           <Toolbar
             interval={interval}
-            onIntervalChange={(v) => { setInterval(v); localStorage.setItem('cv_interval', v) }}
+            onIntervalChange={handleIntervalChange}
             date={date}
-            onDateChange={(v) => { setDate(v); localStorage.setItem('cv_date', v) }}
+            onDateChange={handleDateChange}
           />
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px' }}>
+            {currentUser?.is_admin && <InviteButton />}
+            <button style={logoutBtnStyle} onClick={handleSessionExpired} title={`Sign out (${currentUser?.username})`}>
+              Sign out
+            </button>
+          </div>
         </div>
 
         {/* Chart */}
@@ -185,6 +244,17 @@ const collapsebtnStyle = {
   padding: 0,
 }
 
+const logoutBtnStyle = {
+  padding: '4px 10px',
+  background: 'none',
+  border: '1px solid #30363d',
+  borderRadius: 6,
+  color: '#8b949e',
+  fontSize: 13,
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+}
+
 const expandBtnStyle = {
   width: 20,
   minWidth: 20,
@@ -198,4 +268,3 @@ const expandBtnStyle = {
   padding: 0,
   alignSelf: 'stretch',
 }
-

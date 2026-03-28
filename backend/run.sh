@@ -10,5 +10,11 @@ fi
 source .venv/bin/activate
 pip install -q -r requirements.txt
 
+if [ -f .env ]; then
+  set -a
+  source .env
+  set +a
+fi
+
 echo "Starting ChartViewer backend on http://localhost:8000"
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload

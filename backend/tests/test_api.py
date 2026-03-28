@@ -1,6 +1,5 @@
 """Tests for the FastAPI endpoints."""
 
-import json
 import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
@@ -11,6 +10,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from main import app
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _auth_client(admin_token):
+    global client
+    client = TestClient(app, headers={"Authorization": f"Bearer {admin_token}"})
+
 
 # Fake Yahoo Finance response payload
 def _fake_yf_response(n_bars=5):
@@ -41,7 +47,7 @@ def _mock_get(*args, **kwargs):
     return mock
 
 
-# ── Health ──────────────────────────────────────────────────────────────────
+# ── Health ────────────────────────────────────────────────────────────────────
 
 def test_health():
     r = client.get("/health")
@@ -49,13 +55,87 @@ def test_health():
     assert r.json() == {"status": "ok"}
 
 
-# ── /api/symbols ─────────────────────────────────────────────────────────────
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+def test_login_invalid_credentials():
+    r = TestClient(app).post("/auth/login", json={"username": "nobody", "password": "wrong"})
+    assert r.status_code == 401
+
+
+def test_login_success(admin_token):
+    r = TestClient(app).post("/auth/login", json={"username": "testadmin", "password": "testpass"})
+    assert r.status_code == 200
+    assert "access_token" in r.json()
+
+
+def test_me(admin_token):
+    r = client.get("/auth/me")
+    assert r.status_code == 200
+    assert r.json()["username"] == "testadmin"
+    assert r.json()["is_admin"] is True
+
+
+def test_protected_route_rejects_no_token():
+    r = TestClient(app).get("/api/watchlist")
+    assert r.status_code == 403  # HTTPBearer returns 403 when no credentials provided
+
+
+def test_protected_route_rejects_bad_token():
+    r = TestClient(app).get("/api/watchlist", headers={"Authorization": "Bearer bad.token.here"})
+    assert r.status_code == 401
+
+
+def test_invite_create_and_register():
+    # Admin creates invite
+    r = client.post("/auth/invite")
+    assert r.status_code == 200
+    token = r.json()["token"]
+
+    # Register new user with invite
+    r = TestClient(app).post("/auth/register", json={
+        "username": "newuser",
+        "password": "newpass",
+        "invite_token": token,
+    })
+    assert r.status_code == 200
+    assert "access_token" in r.json()
+
+    # Cannot reuse invite
+    r = TestClient(app).post("/auth/register", json={
+        "username": "anotheruser",
+        "password": "pass",
+        "invite_token": token,
+    })
+    assert r.status_code == 400
+
+
+def test_invite_expired():
+    import cache, time
+    # Manually insert an expired token (created 16 days ago)
+    expired_token = "expired-test-token-xyz"
+    old_ts = int(time.time()) - 16 * 86400
+    with cache._connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO invite_tokens (token, created_by, created_at) VALUES (?, 1, ?)",
+            (expired_token, old_ts),
+        )
+    r = TestClient(app).post("/auth/register", json={
+        "username": "lateuser",
+        "password": "pass",
+        "invite_token": expired_token,
+    })
+    assert r.status_code == 400
+    assert "expired" in r.json()["detail"].lower()
+
+
+# ── /api/watchlist ────────────────────────────────────────────────────────────
 
 def test_watchlist_returns_list():
     r = client.get("/api/watchlist")
     assert r.status_code == 200
     data = r.json()
     assert "symbols" in data
+    assert isinstance(data["symbols"], list)
     assert len(data["symbols"]) > 0
     assert all("ticker" in s and "label" in s for s in data["symbols"])
 
@@ -70,7 +150,21 @@ def test_watchlist_save_and_reload():
     assert tickers == ["AAPL", "MSFT"]
 
 
-# ── /api/ohlc validation ─────────────────────────────────────────────────────
+# ── /api/preferences ──────────────────────────────────────────────────────────
+
+def test_preferences_round_trip():
+    r = client.put("/api/preferences", json={"ticker": "AAPL", "interval": "4h", "date": "2025-06-01"})
+    assert r.status_code == 200
+
+    r = client.get("/api/preferences")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ticker"] == "AAPL"
+    assert data["interval"] == "4h"
+    assert data["date"] == "2025-06-01"
+
+
+# ── /api/ohlc validation ──────────────────────────────────────────────────────
 
 def test_ohlc_missing_params():
     r = client.get("/api/ohlc")
@@ -118,7 +212,7 @@ def test_ohlc_15m_old_date_returns_400():
     assert "15m" in r.json()["detail"]
 
 
-# ── /api/ohlc data ───────────────────────────────────────────────────────────
+# ── /api/ohlc data ────────────────────────────────────────────────────────────
 
 @patch("data._session")
 def test_ohlc_returns_bars(mock_session):
@@ -151,5 +245,4 @@ def test_ohlc_cached_on_second_call(mock_session):
     call_count_after_first = mock_session.get.call_count
 
     client.get(url)
-    # Second call should not increase the HTTP call count
     assert mock_session.get.call_count == call_count_after_first
