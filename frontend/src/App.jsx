@@ -15,6 +15,7 @@ export default function App() {
   const [bars, setBars] = useState(null)
   const [loading, setLoading] = useState(false)
   const [toast, setToast] = useState(null)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
 
   const loadData = useCallback(async () => {
     if (!activeTicker) return
@@ -73,14 +74,26 @@ export default function App() {
   return (
     <div style={appStyle}>
       {/* Sidebar */}
-      <TickerList
-        tickers={tickers}
-        activeTicker={activeTicker}
-        onSelect={handleSelect}
-        onAdd={handleAdd}
-        onRemove={handleRemove}
-        onReorder={handleReorder}
-      />
+      {sidebarOpen && (
+        <div style={{ position: 'relative', display: 'flex' }}>
+          <TickerList
+            tickers={tickers}
+            activeTicker={activeTicker}
+            onSelect={handleSelect}
+            onAdd={handleAdd}
+            onRemove={handleRemove}
+            onReorder={handleReorder}
+          />
+          <button onClick={() => setSidebarOpen(false)} style={collapsebtnStyle} title="Hide sidebar">
+            ‹
+          </button>
+        </div>
+      )}
+      {!sidebarOpen && (
+        <button onClick={() => setSidebarOpen(true)} style={expandBtnStyle} title="Show sidebar">
+          ›
+        </button>
+      )}
 
       {/* Main panel */}
       <div style={mainStyle}>
@@ -145,5 +158,39 @@ const symbolNameStyle = {
 const chartWrapStyle = {
   flex: 1,
   overflow: 'hidden',
+}
+
+const collapsebtnStyle = {
+  position: 'absolute',
+  right: -12,
+  top: '50%',
+  transform: 'translateY(-50%)',
+  zIndex: 10,
+  width: 20,
+  height: 48,
+  background: '#21262d',
+  border: '1px solid #30363d',
+  borderRadius: '0 4px 4px 0',
+  color: '#6e7681',
+  fontSize: 16,
+  cursor: 'pointer',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: 0,
+}
+
+const expandBtnStyle = {
+  width: 20,
+  minWidth: 20,
+  background: '#21262d',
+  border: '1px solid #30363d',
+  borderLeft: 'none',
+  borderRadius: '0 4px 4px 0',
+  color: '#6e7681',
+  fontSize: 16,
+  cursor: 'pointer',
+  padding: 0,
+  alignSelf: 'stretch',
 }
 
