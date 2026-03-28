@@ -9,9 +9,9 @@ const today = () => new Date().toISOString().slice(0, 10)
 
 export default function App() {
   const [tickers, setTickers] = useState([])
-  const [activeTicker, setActiveTicker] = useState(null)
-  const [interval, setInterval] = useState('1h')
-  const [date, setDate] = useState(today())
+  const [activeTicker, setActiveTicker] = useState(() => localStorage.getItem('cv_ticker') || null)
+  const [interval, setInterval] = useState(() => localStorage.getItem('cv_interval') || '1h')
+  const [date, setDate] = useState(() => localStorage.getItem('cv_date') || today())
   const [bars, setBars] = useState(null)
   const [loading, setLoading] = useState(false)
   const [toast, setToast] = useState(null)
@@ -40,11 +40,16 @@ export default function App() {
   useEffect(() => {
     fetchWatchlist().then((data) => {
       setTickers(data.symbols)
-      if (data.symbols.length > 0) setActiveTicker(data.symbols[0].ticker)
+      const saved = localStorage.getItem('cv_ticker')
+      const inList = data.symbols.find((t) => t.ticker === saved)
+      if (!inList && data.symbols.length > 0) setActiveTicker(data.symbols[0].ticker)
     }).catch(() => {})
   }, [])
 
-  const handleSelect = (ticker) => setActiveTicker(ticker)
+  const handleSelect = (ticker) => {
+    setActiveTicker(ticker)
+    localStorage.setItem('cv_ticker', ticker)
+  }
 
   const handleAdd = (ticker) => {
     if (tickers.find((t) => t.ticker === ticker)) {
@@ -102,9 +107,9 @@ export default function App() {
           <span style={symbolNameStyle}>{activeLabel}</span>
           <Toolbar
             interval={interval}
-            onIntervalChange={setInterval}
+            onIntervalChange={(v) => { setInterval(v); localStorage.setItem('cv_interval', v) }}
             date={date}
-            onDateChange={setDate}
+            onDateChange={(v) => { setDate(v); localStorage.setItem('cv_date', v) }}
           />
         </div>
 
