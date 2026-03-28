@@ -72,7 +72,7 @@ export default function Chart({ bars, interval, targetDate, loading }) {
 
   // Update data when bars change
   useEffect(() => {
-    if (!seriesRef.current || !bars) return
+    if (!seriesRef.current || !bars || !chartRef.current) return
 
     const formatted = bars.map((b) => ({
       time: b.ts,
@@ -83,28 +83,40 @@ export default function Chart({ bars, interval, targetDate, loading }) {
     }))
     seriesRef.current.setData(formatted)
 
-    // Scroll to targetDate if provided
-    if (targetDate && formatted.length > 0 && chartRef.current) {
-      const targetTs = Math.floor(new Date(targetDate).getTime() / 1000)
-      chartRef.current.timeScale().scrollToPosition(0, false)
-      // Find the nearest bar and set visible range around it
-      const nearest = formatted.reduce((prev, cur) =>
-        Math.abs(cur.time - targetTs) < Math.abs(prev.time - targetTs) ? cur : prev
-      )
-      chartRef.current.timeScale().scrollToRealTime()
+    if (formatted.length === 0) return
 
-      // Show ~100 bars centred on target
-      const idx = formatted.indexOf(nearest)
-      const half = 50
-      const visFrom = formatted[Math.max(0, idx - half)]?.time
-      const visTo = formatted[Math.min(formatted.length - 1, idx + half)]?.time
-      if (visFrom && visTo) {
-        chartRef.current.timeScale().setVisibleRange({ from: visFrom, to: visTo })
-      }
-    } else if (formatted.length > 0 && chartRef.current) {
-      chartRef.current.timeScale().fitContent()
+    // Set price precision based on the median close price
+    const mid = formatted[Math.floor(formatted.length / 2)].close
+    const priceFormat = mid < 2     ? { precision: 5, minMove: 0.00001 }
+                      : mid < 20    ? { precision: 4, minMove: 0.0001  }
+                      : mid < 200   ? { precision: 3, minMove: 0.001   }
+                      : mid < 5000  ? { precision: 2, minMove: 0.01    }
+                      :               { precision: 1, minMove: 0.1     }
+    seriesRef.current.applyOptions({ priceFormat: { type: 'price', ...priceFormat } })
+
+    // Number of bars to show in the visible window per interval
+    const VISIBLE_BARS = {
+      '5m': 96, '15m': 96, '1h': 120, '4h': 120,
+      '1d': 120, '1wk': 104, '1mo': 60, '1y': 20,
     }
-  }, [bars, targetDate])
+    const half = Math.floor((VISIBLE_BARS[interval] ?? 120) / 2)
+
+    // Find the bar closest to targetDate (or use the last bar)
+    const targetTs = targetDate
+      ? Math.floor(new Date(targetDate).getTime() / 1000)
+      : formatted[formatted.length - 1].time
+
+    let idx = formatted.length - 1
+    let minDiff = Infinity
+    for (let i = 0; i < formatted.length; i++) {
+      const diff = Math.abs(formatted[i].time - targetTs)
+      if (diff < minDiff) { minDiff = diff; idx = i }
+    }
+
+    const from = formatted[Math.max(0, idx - half)].time
+    const to   = formatted[Math.min(formatted.length - 1, idx + half)].time
+    chartRef.current.timeScale().setVisibleRange({ from, to })
+  }, [bars, targetDate, interval])
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>

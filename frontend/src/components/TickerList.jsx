@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 
-export default function TickerList({ tickers, activeTicker, onSelect, onAdd, onRemove }) {
+export default function TickerList({ tickers, activeTicker, onSelect, onAdd, onRemove, onReorder }) {
   const [input, setInput] = useState('')
+  const [dragOver, setDragOver] = useState(null)
+  const dragIdx = useRef(null)
 
   const handleAdd = () => {
     const val = input.trim().toUpperCase()
@@ -14,13 +16,49 @@ export default function TickerList({ tickers, activeTicker, onSelect, onAdd, onR
     if (e.key === 'Enter') handleAdd()
   }
 
+  const handleDragStart = (e, idx) => {
+    dragIdx.current = idx
+    e.dataTransfer.effectAllowed = 'move'
+  }
+
+  const handleDragOver = (e, idx) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setDragOver(idx)
+  }
+
+  const handleDrop = (e, idx) => {
+    e.preventDefault()
+    setDragOver(null)
+    if (dragIdx.current === null || dragIdx.current === idx) return
+    const reordered = [...tickers]
+    const [moved] = reordered.splice(dragIdx.current, 1)
+    reordered.splice(idx, 0, moved)
+    dragIdx.current = null
+    onReorder(reordered)
+  }
+
+  const handleDragEnd = () => {
+    dragIdx.current = null
+    setDragOver(null)
+  }
+
   return (
     <div style={sidebarStyle}>
       <div style={headerStyle}>Watchlist</div>
 
       <div style={listStyle}>
-        {tickers.map((t) => (
-          <div key={t.ticker} style={rowStyle(t.ticker === activeTicker)}>
+        {tickers.map((t, idx) => (
+          <div
+            key={t.ticker}
+            draggable
+            onDragStart={(e) => handleDragStart(e, idx)}
+            onDragOver={(e) => handleDragOver(e, idx)}
+            onDrop={(e) => handleDrop(e, idx)}
+            onDragEnd={handleDragEnd}
+            style={rowStyle(t.ticker === activeTicker, dragOver === idx)}
+          >
+            <span style={dragHandleStyle} title="Drag to reorder">⠿</span>
             <span
               onClick={() => onSelect(t.ticker)}
               style={tickerLabelStyle}
@@ -82,15 +120,24 @@ const listStyle = {
   overflowY: 'auto',
 }
 
-const rowStyle = (active) => ({
+const rowStyle = (active, isDragTarget) => ({
   display: 'flex',
   alignItems: 'center',
-  justifyContent: 'space-between',
-  padding: '6px 10px',
-  background: active ? '#1f2937' : 'transparent',
+  gap: 4,
+  padding: '6px 10px 6px 6px',
+  background: isDragTarget ? '#2d333b' : active ? '#1f2937' : 'transparent',
   borderLeft: `3px solid ${active ? '#1f6feb' : 'transparent'}`,
-  cursor: 'pointer',
+  borderTop: isDragTarget ? '2px solid #1f6feb' : '2px solid transparent',
+  cursor: 'grab',
+  userSelect: 'none',
 })
+
+const dragHandleStyle = {
+  color: '#484f58',
+  fontSize: 14,
+  cursor: 'grab',
+  flexShrink: 0,
+}
 
 const tickerLabelStyle = {
   flex: 1,
@@ -99,6 +146,7 @@ const tickerLabelStyle = {
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
+  cursor: 'pointer',
 }
 
 const removeBtnStyle = {
@@ -109,6 +157,7 @@ const removeBtnStyle = {
   cursor: 'pointer',
   padding: '0 2px',
   lineHeight: 1,
+  flexShrink: 0,
 }
 
 const addRowStyle = {

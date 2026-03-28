@@ -2,39 +2,29 @@ import { useState, useEffect, useCallback } from 'react'
 import Chart from './components/Chart.jsx'
 import Toolbar from './components/Toolbar.jsx'
 import TickerList from './components/TickerList.jsx'
-import { fetchOHLC, fetchSymbols, windowForInterval } from './api.js'
+import Toast from './components/Toast.jsx'
+import { fetchOHLC, fetchWatchlist, saveWatchlist, windowForInterval } from './api.js'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
-const DEFAULT_TICKERS = [
-  { ticker: 'XAUUSD=X', label: 'XAU/USD' },
-  { ticker: 'EURUSD=X', label: 'EUR/USD' },
-  { ticker: 'GBPUSD=X', label: 'GBP/USD' },
-  { ticker: 'USDJPY=X', label: 'USD/JPY' },
-  { ticker: 'USDCHF=X', label: 'USD/CHF' },
-  { ticker: 'AUDUSD=X', label: 'AUD/USD' },
-  { ticker: 'USDCAD=X', label: 'USD/CAD' },
-]
-
 export default function App() {
-  const [tickers, setTickers] = useState(DEFAULT_TICKERS)
-  const [activeTicker, setActiveTicker] = useState(DEFAULT_TICKERS[0].ticker)
+  const [tickers, setTickers] = useState([])
+  const [activeTicker, setActiveTicker] = useState(null)
   const [interval, setInterval] = useState('1h')
   const [date, setDate] = useState(today())
   const [bars, setBars] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
+  const [toast, setToast] = useState(null)
 
   const loadData = useCallback(async () => {
     if (!activeTicker) return
     setLoading(true)
-    setError(null)
     try {
       const [start, end] = windowForInterval(interval, date)
       const result = await fetchOHLC(activeTicker, interval, start, end)
       setBars(result.bars)
     } catch (e) {
-      setError(e.message)
+      setToast(e.message)
       setBars([])
     } finally {
       setLoading(false)
@@ -45,27 +35,37 @@ export default function App() {
     loadData()
   }, [loadData])
 
-  // Load default symbols from server on first mount
+  // Load watchlist from backend on first mount
   useEffect(() => {
-    fetchSymbols()
-      .then((data) => setTickers(data.symbols))
-      .catch(() => {/* keep defaults */})
+    fetchWatchlist().then((data) => {
+      setTickers(data.symbols)
+      if (data.symbols.length > 0) setActiveTicker(data.symbols[0].ticker)
+    }).catch(() => {})
   }, [])
 
   const handleSelect = (ticker) => setActiveTicker(ticker)
 
   const handleAdd = (ticker) => {
-    if (tickers.find((t) => t.ticker === ticker)) return
-    setTickers((prev) => [...prev, { ticker, label: ticker }])
+    if (tickers.find((t) => t.ticker === ticker)) {
+      setToast(`${ticker} is already in your watchlist`)
+      return
+    }
+    const updated = [...tickers, { ticker, label: ticker }]
+    setTickers(updated)
     setActiveTicker(ticker)
+    saveWatchlist(updated).catch(() => setToast('Failed to save watchlist'))
   }
 
   const handleRemove = (ticker) => {
-    setTickers((prev) => prev.filter((t) => t.ticker !== ticker))
-    if (activeTicker === ticker) {
-      const remaining = tickers.filter((t) => t.ticker !== ticker)
-      setActiveTicker(remaining[0]?.ticker ?? null)
-    }
+    const updated = tickers.filter((t) => t.ticker !== ticker)
+    setTickers(updated)
+    if (activeTicker === ticker) setActiveTicker(updated[0]?.ticker ?? null)
+    saveWatchlist(updated).catch(() => setToast('Failed to save watchlist'))
+  }
+
+  const handleReorder = (reordered) => {
+    setTickers(reordered)
+    saveWatchlist(reordered).catch(() => setToast('Failed to save watchlist'))
   }
 
   const activeLabel = tickers.find((t) => t.ticker === activeTicker)?.label ?? activeTicker
@@ -79,6 +79,7 @@ export default function App() {
         onSelect={handleSelect}
         onAdd={handleAdd}
         onRemove={handleRemove}
+        onReorder={handleReorder}
       />
 
       {/* Main panel */}
@@ -94,11 +95,6 @@ export default function App() {
           />
         </div>
 
-        {/* Error banner */}
-        {error && (
-          <div style={errorStyle}>{error}</div>
-        )}
-
         {/* Chart */}
         <div style={chartWrapStyle}>
           <Chart
@@ -109,6 +105,7 @@ export default function App() {
           />
         </div>
       </div>
+      <Toast message={toast} onDismiss={() => setToast(null)} />
     </div>
   )
 }
@@ -150,10 +147,3 @@ const chartWrapStyle = {
   overflow: 'hidden',
 }
 
-const errorStyle = {
-  padding: '8px 16px',
-  background: '#3d1a1a',
-  color: '#f85149',
-  fontSize: 13,
-  borderBottom: '1px solid #f85149',
-}

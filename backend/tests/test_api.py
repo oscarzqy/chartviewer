@@ -51,13 +51,23 @@ def test_health():
 
 # ── /api/symbols ─────────────────────────────────────────────────────────────
 
-def test_symbols_returns_list():
-    r = client.get("/api/symbols")
+def test_watchlist_returns_list():
+    r = client.get("/api/watchlist")
     assert r.status_code == 200
     data = r.json()
     assert "symbols" in data
     assert len(data["symbols"]) > 0
     assert all("ticker" in s and "label" in s for s in data["symbols"])
+
+
+def test_watchlist_save_and_reload():
+    new_list = [{"ticker": "AAPL", "label": "Apple"}, {"ticker": "MSFT", "label": "Microsoft"}]
+    r = client.put("/api/watchlist", json={"symbols": new_list})
+    assert r.status_code == 200
+
+    r = client.get("/api/watchlist")
+    tickers = [s["ticker"] for s in r.json()["symbols"]]
+    assert tickers == ["AAPL", "MSFT"]
 
 
 # ── /api/ohlc validation ─────────────────────────────────────────────────────
@@ -72,6 +82,19 @@ def test_ohlc_invalid_interval():
     assert r.status_code == 400
 
 
+@patch("data._session")
+def test_ohlc_unknown_symbol_returns_404(mock_session):
+    not_found_resp = MagicMock()
+    not_found_resp.raise_for_status = MagicMock()
+    not_found_resp.json.return_value = {
+        "chart": {"result": None, "error": {"code": "Not Found", "description": "No data found"}}
+    }
+    mock_session.get.return_value = not_found_resp
+    r = client.get("/api/ohlc?symbol=INVALID=X&interval=1h&start=2025-01-01&end=2025-02-01")
+    assert r.status_code == 404
+    assert "not found" in r.json()["detail"].lower()
+
+
 def test_ohlc_start_after_end():
     r = client.get("/api/ohlc?symbol=EURUSD=X&interval=1h&start=2025-06-01&end=2025-01-01")
     assert r.status_code == 400
@@ -80,6 +103,19 @@ def test_ohlc_start_after_end():
 def test_ohlc_invalid_date_format():
     r = client.get("/api/ohlc?symbol=EURUSD=X&interval=1h&start=not-a-date&end=2025-02-01")
     assert r.status_code == 400
+
+
+def test_ohlc_5m_old_date_returns_400():
+    """5m/15m data is only available for the last 60 days — older dates should 400."""
+    r = client.get("/api/ohlc?symbol=EURUSD=X&interval=5m&start=2024-01-01&end=2024-02-01")
+    assert r.status_code == 400
+    assert "5m" in r.json()["detail"]
+
+
+def test_ohlc_15m_old_date_returns_400():
+    r = client.get("/api/ohlc?symbol=EURUSD=X&interval=15m&start=2024-01-01&end=2024-02-01")
+    assert r.status_code == 400
+    assert "15m" in r.json()["detail"]
 
 
 # ── /api/ohlc data ───────────────────────────────────────────────────────────

@@ -38,6 +38,13 @@ def init_db():
                 last_updated INTEGER NOT NULL,
                 PRIMARY KEY (symbol, interval)
             );
+
+            CREATE TABLE IF NOT EXISTS watchlist (
+                position INTEGER NOT NULL,
+                ticker   TEXT    NOT NULL,
+                label    TEXT    NOT NULL,
+                PRIMARY KEY (ticker)
+            );
         """)
 
 
@@ -87,6 +94,24 @@ def set_fetch_meta(symbol: str, interval: str, fetched_from: int, fetched_to: in
             VALUES (?, ?, ?, ?, ?)
             """,
             (symbol, interval, fetched_from, fetched_to, now),
+        )
+
+
+def get_watchlist() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT ticker, label FROM watchlist ORDER BY position"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_watchlist(symbols: list[dict]):
+    """Replace the entire watchlist. symbols = [{"ticker": ..., "label": ...}, ...]"""
+    with _connect() as conn:
+        conn.execute("DELETE FROM watchlist")
+        conn.executemany(
+            "INSERT INTO watchlist (position, ticker, label) VALUES (?, ?, ?)",
+            [(i, s["ticker"], s["label"]) for i, s in enumerate(symbols)],
         )
 
 

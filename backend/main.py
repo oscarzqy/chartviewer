@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import cache
 import data
@@ -18,6 +19,25 @@ app.add_middleware(
 cache.init_db()
 
 VALID_INTERVALS = {"5m", "15m", "1h", "4h", "1d", "1wk", "1mo", "1y"}
+
+DEFAULT_WATCHLIST = [
+    {"ticker": "GC=F",    "label": "XAU/USD"},
+    {"ticker": "EURUSD=X","label": "EUR/USD"},
+    {"ticker": "GBPUSD=X","label": "GBP/USD"},
+    {"ticker": "USDJPY=X","label": "USD/JPY"},
+    {"ticker": "USDCHF=X","label": "USD/CHF"},
+    {"ticker": "AUDUSD=X","label": "AUD/USD"},
+    {"ticker": "USDCAD=X","label": "USD/CAD"},
+]
+
+
+class WatchlistSymbol(BaseModel):
+    ticker: str
+    label: str
+
+
+class WatchlistPayload(BaseModel):
+    symbols: list[WatchlistSymbol]
 
 
 @app.get("/api/ohlc")
@@ -39,24 +59,31 @@ def get_ohlc(
     if start_dt >= end_dt:
         raise HTTPException(400, "start must be before end.")
 
-    bars = data.get_ohlc(symbol.upper(), interval, start_dt, end_dt)
-    return {"symbol": symbol.upper(), "interval": interval, "bars": bars}
+    sym = symbol.upper()
+    try:
+        bars = data.get_ohlc(sym, interval, start_dt, end_dt)
+    except data.SymbolNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except data.DataUnavailableError as e:
+        raise HTTPException(400, str(e))
+    return {"symbol": sym, "interval": interval, "bars": bars}
 
 
-@app.get("/api/symbols")
-def list_symbols():
-    """Return the default watchlist."""
-    return {
-        "symbols": [
-            {"ticker": "XAUUSD=X", "label": "XAU/USD"},
-            {"ticker": "EURUSD=X", "label": "EUR/USD"},
-            {"ticker": "GBPUSD=X", "label": "GBP/USD"},
-            {"ticker": "USDJPY=X", "label": "USD/JPY"},
-            {"ticker": "USDCHF=X", "label": "USD/CHF"},
-            {"ticker": "AUDUSD=X", "label": "AUD/USD"},
-            {"ticker": "USDCAD=X", "label": "USD/CAD"},
-        ]
-    }
+@app.get("/api/watchlist")
+def get_watchlist():
+    symbols = cache.get_watchlist()
+    if not symbols:
+        # First run: seed with defaults and persist them
+        cache.save_watchlist(DEFAULT_WATCHLIST)
+        symbols = DEFAULT_WATCHLIST
+    return {"symbols": symbols}
+
+
+@app.put("/api/watchlist")
+def save_watchlist(payload: WatchlistPayload):
+    symbols = [s.model_dump() for s in payload.symbols]
+    cache.save_watchlist(symbols)
+    return {"symbols": symbols}
 
 
 @app.get("/health")
