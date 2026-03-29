@@ -1,0 +1,6 @@
+# Replace yourdomain.com with your actual domain (or the VPS IP for testing)
+# Caddy auto-provisions and renews TLS certificates via Let's Encrypt.
+
+yourdomain.com {
+    reverse_proxy localhost:8080
+}
