@@ -74,6 +74,16 @@ export default function App() {
       const [start, end] = windowForInterval(interval, date)
       const result = await fetchOHLC(activeTicker, interval, start, end)
       setBars(result.bars)
+      if (result.bars.length === 0) {
+        setToast(`No data found for ${activeTicker}`)
+      } else {
+        const centerMs = new Date(date).getTime()
+        const firstBarMs = result.bars[0].ts * 1000
+        if (firstBarMs > centerMs + 3 * 86400_000) {
+          const firstDate = new Date(firstBarMs).toLocaleDateString()
+          setToast(`${interval} data unavailable before ${firstDate}`)
+        }
+      }
     } catch (e) {
       if (e.status === 401) handleSessionExpired()
       else { setToast(e.message); setBars([]) }

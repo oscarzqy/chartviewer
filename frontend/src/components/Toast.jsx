@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 
 export default function Toast({ message, onDismiss }) {
-  const [visible, setVisible] = useState(false)
+  const [hiding, setHiding] = useState(false)
 
   useEffect(() => {
     if (!message) return
-    setVisible(true)
-    const hide = setTimeout(() => setVisible(false), 4000)
+    setHiding(false)
+    const hide = setTimeout(() => setHiding(true), 4000)
     const remove = setTimeout(onDismiss, 4400)
     return () => { clearTimeout(hide); clearTimeout(remove) }
   }, [message])
@@ -14,7 +14,7 @@ export default function Toast({ message, onDismiss }) {
   if (!message) return null
 
   return (
-    <div style={{ ...toastStyle, opacity: visible ? 1 : 0 }}>
+    <div style={{ ...toastStyle, opacity: hiding ? 0 : 1 }}>
       <span style={{ fontSize: 16, lineHeight: 1 }}>⚠</span>
       {message}
     </div>
@@ -23,7 +23,7 @@ export default function Toast({ message, onDismiss }) {
 
 const toastStyle = {
   position: 'fixed',
-  bottom: 24,
+  top: 24,
   left: '50%',
   transform: 'translateX(-50%)',
   background: '#3d1a1a',

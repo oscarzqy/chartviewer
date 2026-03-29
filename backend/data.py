@@ -60,7 +60,7 @@ def _yf_fetch(symbol: str, yf_interval: str, start: datetime, end: datetime) -> 
         code = error.get("code", "Unknown")
         if code == "Not Found":
             raise SymbolNotFoundError(f"{symbol} was not found on Yahoo Finance")
-        raise ValueError(f"No data from Yahoo Finance: {error}")
+        raise DataUnavailableError(f"No data available for {symbol}")
 
     result = result[0]
     timestamps = result.get("timestamp", [])
@@ -210,7 +210,7 @@ def get_ohlc(symbol: str, interval: str, start: datetime, end: datetime) -> list
                     new_from = min(start_ts, meta["fetched_from"] if meta else start_ts)
                     new_to = max(end_ts, meta["fetched_to"] if meta else end_ts)
                     cache.set_fetch_meta(symbol, interval, new_from, new_to)
-            except SymbolNotFoundError:
+            except (SymbolNotFoundError, DataUnavailableError):
                 raise
             except Exception as e:
                 logger.warning(f"Fetch failed for {symbol} {interval}: {e}")
