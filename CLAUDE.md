@@ -3,7 +3,7 @@
 TradingView-like OHLC chart viewer. FastAPI backend + React (Vite) + TradingView Lightweight Charts.
 
 ## Stack
-- **Backend**: FastAPI, SQLite cache, Yahoo Finance v8 API (direct HTTP, not yfinance library)
+- **Backend**: FastAPI, SQLite cache, Yahoo Finance v8 API + Polygon.io REST API
 - **Frontend**: React 18, Vite, lightweight-charts v4
 
 ## Running
@@ -20,8 +20,8 @@ Backend: http://localhost:8000
 Frontend: http://localhost:5173 (proxies /api → backend)
 
 ## Key files
-- `backend/main.py` — FastAPI app, `/api/ohlc` and `/api/symbols`
-- `backend/data.py` — Yahoo Finance fetch + 4H/1Y resampling; uses `_session` (requests.Session with User-Agent)
+- `backend/main.py` — FastAPI app; `/api/ohlc`, `/api/sources`, watchlist, prefs, auth
+- `backend/data.py` — Multi-source data fetch + cache dispatch; Yahoo Finance + Polygon.io; `parse_symbol()` for `POLYGON:` prefix routing
 - `backend/cache.py` — SQLite OHLC cache; DB path overridable via `CHARTVIEWER_DB_PATH` env var
 - `frontend/src/api.js` — fetch helpers + `windowForInterval()` (date range per timeframe)
 - `frontend/src/components/Chart.jsx` — Lightweight Charts wrapper (add indicators here as extra series)
@@ -45,6 +45,15 @@ Tests use a temp SQLite DB (via `CHARTVIEWER_DB_PATH`). Yahoo Finance HTTP calls
 ## Hooks (auto-configured in .claude/settings.local.json)
 - **Stop**: runs `pytest tests/ -q` and shows summary in UI
 - **PostToolUse Write|Edit**: runs `ruff check` on any `.py` file just written
+
+## Data sources
+Symbol encoding in watchlist / API calls:
+- Bare ticker `GC=F` or `YAHOO:GC=F` → Yahoo Finance (bare = backward compat)
+- `POLYGON:C:XAUUSD` → Polygon.io (set `POLYGON_API_KEY` in `backend/.env`)
+
+Polygon ticker formats: forex = `C:XAUUSD`, stocks = `AAPL`, crypto = `X:BTCUSD`.
+Polygon errors (including no data today on free tier) are surfaced directly on the chart — no cache fallback.
+Yahoo Finance date-range errors fall back to cache if data exists.
 
 ## v1 scope / future work
 - Indicators: add as extra `chart.addLineSeries()` in `Chart.jsx`; data computed in `data.py` or client-side

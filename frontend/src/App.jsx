@@ -27,6 +27,7 @@ export default function App() {
   const [interval, setInterval] = useState('1h')
   const [date, setDate] = useState(today())
   const [bars, setBars] = useState(null)
+  const [chartError, setChartError] = useState(null)
   const [loading, setLoading] = useState(false)
   const [toast, setToast] = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -38,7 +39,7 @@ export default function App() {
     setCurrentUser(null)
   }
 
-  // Load preferences and watchlist once token is available
+  // Load preferences, watchlist, and sources once token is available
   useEffect(() => {
     if (!token) return
     fetchPreferences()
@@ -50,7 +51,7 @@ export default function App() {
       })
       .catch((e) => {
         if (e.status === 401) handleSessionExpired()
-        else setPrefsLoaded(true) // still show the app even if prefs fail
+        else setPrefsLoaded(true)
       })
     fetchWatchlist()
       .then((data) => {
@@ -70,6 +71,7 @@ export default function App() {
   const loadData = useCallback(async () => {
     if (!activeTicker) return
     setLoading(true)
+    setChartError(null)
     try {
       const [start, end] = windowForInterval(interval, date)
       const result = await fetchOHLC(activeTicker, interval, start, end)
@@ -86,7 +88,11 @@ export default function App() {
       }
     } catch (e) {
       if (e.status === 401) handleSessionExpired()
-      else { setToast(e.message); setBars([]) }
+      else {
+        setToast(e.message)
+        setBars([])
+        setChartError(e.message)
+      }
     } finally {
       setLoading(false)
     }
@@ -111,12 +117,12 @@ export default function App() {
     if (prefsLoaded) savePreferences({ ticker: activeTicker, interval, date: v }).catch(() => {})
   }
 
-  const handleAdd = (ticker) => {
+  const handleAdd = ({ ticker, label }) => {
     if (tickers.find((t) => t.ticker === ticker)) {
-      setToast(`${ticker} is already in your watchlist`)
+      setToast(`${label} is already in your watchlist`)
       return
     }
-    const updated = [...tickers, { ticker, label: ticker }]
+    const updated = [...tickers, { ticker, label }]
     setTickers(updated)
     setActiveTicker(ticker)
     saveWatchlist(updated).catch(() => setToast('Failed to save watchlist'))
@@ -189,6 +195,7 @@ export default function App() {
             interval={interval}
             targetDate={date}
             loading={loading}
+            errorMessage={chartError}
           />
         </div>
       </div>

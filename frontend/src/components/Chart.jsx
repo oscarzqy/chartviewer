@@ -35,7 +35,7 @@ const CANDLE_COLORS = {
   wickDownColor: '#f85149',
 }
 
-export default function Chart({ bars, interval, targetDate, loading }) {
+export default function Chart({ bars, interval, targetDate, loading, errorMessage }) {
   const containerRef = useRef(null)
   const chartRef = useRef(null)
   const seriesRef = useRef(null)
@@ -124,7 +124,10 @@ export default function Chart({ bars, interval, targetDate, loading }) {
       {loading && (
         <div style={loadingOverlayStyle}>Loading…</div>
       )}
-      {!loading && bars && bars.length === 0 && (
+      {!loading && errorMessage && (
+        <div style={errorOverlayStyle}>{errorMessage}</div>
+      )}
+      {!loading && !errorMessage && bars && bars.length === 0 && (
         <div style={loadingOverlayStyle}>No data available for this range</div>
       )}
     </div>
@@ -139,5 +142,18 @@ const loadingOverlayStyle = {
   justifyContent: 'center',
   color: '#6e7681',
   fontSize: 14,
+  pointerEvents: 'none',
+}
+
+const errorOverlayStyle = {
+  position: 'absolute',
+  inset: 0,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  color: '#f85149',
+  fontSize: 14,
+  padding: '0 40px',
+  textAlign: 'center',
   pointerEvents: 'none',
 }

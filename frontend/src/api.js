@@ -86,6 +86,19 @@ export async function createInvite() {
   return request(`${AUTH}/invite`, { method: 'POST' })
 }
 
+// ── Search ────────────────────────────────────────────────────────────────────
+
+export async function searchTickers(q) {
+  const params = new URLSearchParams({ q })
+  return request(`${API}/search?${params}`)
+}
+
+// ── Sources ───────────────────────────────────────────────────────────────────
+
+export async function fetchSources() {
+  return request(`${API}/sources`)
+}
+
 // ── OHLC ──────────────────────────────────────────────────────────────────────
 
 export async function fetchOHLC(symbol, interval, start, end) {

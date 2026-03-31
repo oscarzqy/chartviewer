@@ -1,19 +1,84 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
+import { searchTickers } from '../api.js'
+
+function tickerDisplay(ticker) {
+  if (ticker.startsWith('POLYGON:')) return ticker.slice('POLYGON:'.length)
+  if (ticker.startsWith('YAHOO:')) return ticker.slice('YAHOO:'.length)
+  return ticker
+}
+
+function sourceOfTicker(ticker) {
+  return ticker.startsWith('POLYGON:') ? 'polygon' : 'yahoo'
+}
 
 export default function TickerList({ tickers, activeTicker, onSelect, onAdd, onRemove, onReorder }) {
-  const [input, setInput] = useState('')
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState([])
+  const [searching, setSearching] = useState(false)
+  const [showDropdown, setShowDropdown] = useState(false)
+  const [hoveredResult, setHoveredResult] = useState(null)
   const [dragOver, setDragOver] = useState(null)
   const dragIdx = useRef(null)
+  const searchTimer = useRef(null)
+  const containerRef = useRef(null)
 
-  const handleAdd = () => {
-    const val = input.trim().toUpperCase()
-    if (!val) return
-    onAdd(val)
-    setInput('')
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setShowDropdown(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const handleQueryChange = (e) => {
+    const val = e.target.value
+    setQuery(val)
+    clearTimeout(searchTimer.current)
+    if (!val.trim()) {
+      setResults([])
+      setShowDropdown(false)
+      setSearching(false)
+      return
+    }
+    setSearching(true)
+    searchTimer.current = setTimeout(async () => {
+      try {
+        const data = await searchTickers(val.trim())
+        setResults(data.results)
+        setShowDropdown(data.results.length > 0)
+      } catch {
+        setResults([])
+        setShowDropdown(false)
+      } finally {
+        setSearching(false)
+      }
+    }, 300)
+  }
+
+  const handleResultClick = (result) => {
+    onAdd({ ticker: result.ticker, label: result.label || tickerDisplay(result.ticker) })
+    setQuery('')
+    setResults([])
+    setShowDropdown(false)
   }
 
   const handleKey = (e) => {
-    if (e.key === 'Enter') handleAdd()
+    if (e.key === 'Enter') {
+      if (showDropdown && results.length > 0) {
+        handleResultClick(results[0])
+      } else if (query.trim() && !searching) {
+        // Manual add as bare Yahoo ticker
+        const val = query.trim().toUpperCase()
+        onAdd({ ticker: val, label: val })
+        setQuery('')
+      }
+    }
+    if (e.key === 'Escape') {
+      setShowDropdown(false)
+    }
   }
 
   const handleDragStart = (e, idx) => {
@@ -48,48 +113,69 @@ export default function TickerList({ tickers, activeTicker, onSelect, onAdd, onR
       <div style={headerStyle}>Watchlist</div>
 
       <div style={listStyle}>
-        {tickers.map((t, idx) => (
-          <div
-            key={t.ticker}
-            draggable
-            onDragStart={(e) => handleDragStart(e, idx)}
-            onDragOver={(e) => handleDragOver(e, idx)}
-            onDrop={(e) => handleDrop(e, idx)}
-            onDragEnd={handleDragEnd}
-            style={rowStyle(t.ticker === activeTicker, dragOver === idx)}
-          >
-            <span style={dragHandleStyle} title="Drag to reorder">⠿</span>
-            <span
-              onClick={() => onSelect(t.ticker)}
-              style={tickerLabelStyle}
+        {tickers.map((t, idx) => {
+          const src = sourceOfTicker(t.ticker)
+          const display = t.label || tickerDisplay(t.ticker)
+          return (
+            <div
+              key={t.ticker}
+              draggable
+              onDragStart={(e) => handleDragStart(e, idx)}
+              onDragOver={(e) => handleDragOver(e, idx)}
+              onDrop={(e) => handleDrop(e, idx)}
+              onDragEnd={handleDragEnd}
+              style={rowStyle(t.ticker === activeTicker, dragOver === idx)}
             >
-              {t.label || t.ticker}
-            </span>
-            <button
-              onClick={() => onRemove(t.ticker)}
-              style={removeBtnStyle}
-              title="Remove"
-            >
-              ×
-            </button>
+              <span style={dragHandleStyle} title="Drag to reorder">⠿</span>
+              <span
+                onClick={() => onSelect(t.ticker)}
+                style={tickerLabelStyle}
+                title={t.ticker}
+              >
+                {display}
+              </span>
+              {src === 'polygon' && (
+                <span style={pgBadgeStyle} title="Polygon.io">PG</span>
+              )}
+              <button onClick={() => onRemove(t.ticker)} style={removeBtnStyle} title="Remove">×</button>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Search input + dropdown */}
+      <div ref={containerRef} style={searchWrapStyle}>
+        <div style={inputRowStyle}>
+          <input
+            value={query}
+            onChange={handleQueryChange}
+            onKeyDown={handleKey}
+            onFocus={() => results.length > 0 && setShowDropdown(true)}
+            placeholder="Search ticker…"
+            style={inputStyle}
+          />
+          {searching && <span style={spinnerStyle}>⟳</span>}
+        </div>
+
+        {showDropdown && (
+          <div style={dropdownStyle}>
+            {results.map((r) => (
+              <div
+                key={r.ticker}
+                onMouseDown={() => handleResultClick(r)}
+                onMouseEnter={() => setHoveredResult(r.ticker)}
+                onMouseLeave={() => setHoveredResult(null)}
+                style={resultRowStyle(hoveredResult === r.ticker)}
+              >
+                <span style={resultTickerStyle}>{tickerDisplay(r.ticker)}</span>
+                <span style={resultNameStyle}>{r.label}</span>
+                <span style={r.source === 'polygon' ? pgResultBadgeStyle : yfResultBadgeStyle}>
+                  {r.source === 'polygon' ? 'PG' : 'YF'}
+                </span>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
-
-      <div style={addRowStyle}>
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKey}
-          placeholder="Add ticker…"
-          style={inputStyle}
-        />
-        <button onClick={handleAdd} style={addBtnStyle}>+</button>
-      </div>
-
-      <div style={hintStyle}>
-        Use Yahoo Finance symbols<br />
-        e.g. AAPL, BTC-USD, GC=F
+        )}
       </div>
     </div>
   )
@@ -102,7 +188,6 @@ const sidebarStyle = {
   borderRight: '1px solid #30363d',
   display: 'flex',
   flexDirection: 'column',
-  overflowY: 'auto',
 }
 
 const headerStyle = {
@@ -113,6 +198,7 @@ const headerStyle = {
   textTransform: 'uppercase',
   letterSpacing: 1,
   borderBottom: '1px solid #21262d',
+  flexShrink: 0,
 }
 
 const listStyle = {
@@ -149,6 +235,14 @@ const tickerLabelStyle = {
   cursor: 'pointer',
 }
 
+const pgBadgeStyle = {
+  fontSize: 9,
+  fontWeight: 700,
+  color: '#8b5cf6',
+  letterSpacing: 0.5,
+  flexShrink: 0,
+}
+
 const removeBtnStyle = {
   background: 'none',
   border: 'none',
@@ -160,11 +254,17 @@ const removeBtnStyle = {
   flexShrink: 0,
 }
 
-const addRowStyle = {
-  display: 'flex',
-  gap: 4,
-  padding: '8px 10px',
+const searchWrapStyle = {
+  position: 'relative',
   borderTop: '1px solid #21262d',
+  padding: '8px 10px',
+  flexShrink: 0,
+}
+
+const inputRowStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 4,
 }
 
 const inputStyle = {
@@ -176,22 +276,70 @@ const inputStyle = {
   border: '1px solid #30363d',
   borderRadius: 4,
   minWidth: 0,
+  outline: 'none',
 }
 
-const addBtnStyle = {
-  padding: '4px 8px',
-  background: '#1f6feb',
-  color: '#fff',
-  border: 'none',
-  borderRadius: 4,
-  fontSize: 16,
+const spinnerStyle = {
+  color: '#6e7681',
+  fontSize: 14,
+  animation: 'spin 1s linear infinite',
+  flexShrink: 0,
+}
+
+// Dropdown escapes the sidebar's width — positioned relative to searchWrapStyle
+const dropdownStyle = {
+  position: 'absolute',
+  bottom: '100%',
+  left: 0,
+  width: 300,
+  maxHeight: 320,
+  overflowY: 'auto',
+  background: '#1c2128',
+  border: '1px solid #30363d',
+  borderRadius: 6,
+  zIndex: 200,
+  boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+}
+
+const resultRowStyle = (hovered) => ({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  padding: '7px 10px',
   cursor: 'pointer',
-  lineHeight: 1,
+  borderBottom: '1px solid #21262d',
+  background: hovered ? '#2d333b' : 'transparent',
+})
+
+const resultTickerStyle = {
+  fontSize: 12,
+  fontWeight: 700,
+  color: '#e6edf3',
+  flexShrink: 0,
+  minWidth: 60,
 }
 
-const hintStyle = {
-  padding: '6px 10px 10px',
-  fontSize: 10,
-  color: '#484f58',
-  lineHeight: 1.5,
+const resultNameStyle = {
+  flex: 1,
+  fontSize: 11,
+  color: '#8b949e',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+}
+
+const yfResultBadgeStyle = {
+  fontSize: 9,
+  fontWeight: 700,
+  color: '#3fb950',
+  letterSpacing: 0.5,
+  flexShrink: 0,
+}
+
+const pgResultBadgeStyle = {
+  fontSize: 9,
+  fontWeight: 700,
+  color: '#8b5cf6',
+  letterSpacing: 0.5,
+  flexShrink: 0,
 }

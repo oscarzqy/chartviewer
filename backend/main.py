@@ -7,6 +7,8 @@ from typing import Annotated
 import auth
 import cache
 import data
+import os
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -163,6 +165,33 @@ def get_preferences(user: CurrentUser):
 def save_preferences(payload: PreferencesPayload, user: CurrentUser):
     cache.set_preferences(user["id"], payload.ticker, payload.interval, payload.date)
     return {"ticker": payload.ticker, "interval": payload.interval, "date": payload.date}
+
+
+@app.get("/api/search")
+def search_tickers(
+    user: CurrentUser,
+    q: str = Query(..., min_length=1, description="Search query"),
+):
+    """Search for tickers across Yahoo Finance and Polygon.io in parallel."""
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        yf_fut = pool.submit(data.search_yahoo, q)
+        pg_fut = pool.submit(data.search_polygon, q)
+        results = yf_fut.result() + pg_fut.result()
+    return {"results": results}
+
+
+@app.get("/api/sources")
+def get_sources(user: CurrentUser):
+    """Return configured data sources. 'available' is False if API key is missing."""
+    sources = [
+        {"id": "yahoo", "name": "Yahoo Finance", "available": True},
+        {
+            "id": "polygon",
+            "name": "Polygon.io",
+            "available": bool(os.environ.get("POLYGON_API_KEY", "").strip()),
+        },
+    ]
+    return {"sources": sources}
 
 
 @app.get("/health")

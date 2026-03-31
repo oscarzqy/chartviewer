@@ -246,3 +246,106 @@ def test_ohlc_cached_on_second_call(mock_session):
 
     client.get(url)
     assert mock_session.get.call_count == call_count_after_first
+
+
+# ── /api/sources ──────────────────────────────────────────────────────────────
+
+def test_sources_returns_yahoo_and_polygon():
+    r = client.get("/api/sources")
+    assert r.status_code == 200
+    sources = {s["id"]: s for s in r.json()["sources"]}
+    assert "yahoo" in sources
+    assert "polygon" in sources
+    assert sources["yahoo"]["available"] is True
+
+
+def test_sources_polygon_unavailable_without_key(monkeypatch):
+    monkeypatch.setenv("POLYGON_API_KEY", "")
+    r = client.get("/api/sources")
+    assert r.status_code == 200
+    sources = {s["id"]: s for s in r.json()["sources"]}
+    assert sources["polygon"]["available"] is False
+
+
+def test_sources_polygon_available_with_key(monkeypatch):
+    monkeypatch.setenv("POLYGON_API_KEY", "test_key_123")
+    r = client.get("/api/sources")
+    assert r.status_code == 200
+    sources = {s["id"]: s for s in r.json()["sources"]}
+    assert sources["polygon"]["available"] is True
+
+
+# ── Polygon symbol routing ────────────────────────────────────────────────────
+
+def _fake_polygon_response(n_bars=5):
+    base_ts = 1_740_000_000_000  # milliseconds
+    return {
+        "status": "OK",
+        "resultsCount": n_bars,
+        "results": [
+            {
+                "o": 2600.0 + i,
+                "h": 2610.0 + i,
+                "l": 2590.0 + i,
+                "c": 2605.0 + i,
+                "t": base_ts + i * 3_600_000,
+            }
+            for i in range(n_bars)
+        ],
+    }
+
+
+def _mock_polygon_get(*args, **kwargs):
+    mock = MagicMock()
+    mock.raise_for_status = MagicMock()
+    mock.json.return_value = _fake_polygon_response()
+    return mock
+
+
+@patch("data._session")
+def test_ohlc_polygon_symbol_returns_bars(mock_session, monkeypatch):
+    monkeypatch.setenv("POLYGON_API_KEY", "fake_key")
+    mock_session.get.side_effect = _mock_polygon_get
+    r = client.get("/api/ohlc?symbol=POLYGON:C:XAUUSD&interval=1h&start=2025-01-01&end=2025-03-01")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["symbol"] == "POLYGON:C:XAUUSD"
+    assert len(body["bars"]) > 0
+    assert {"ts", "open", "high", "low", "close"} == set(body["bars"][0].keys())
+
+
+@patch("data._session")
+def test_ohlc_polygon_not_found_returns_404(mock_session, monkeypatch):
+    monkeypatch.setenv("POLYGON_API_KEY", "fake_key")
+    not_found = MagicMock()
+    not_found.raise_for_status = MagicMock()
+    not_found.json.return_value = {"status": "NOT_FOUND", "results": None}
+    mock_session.get.return_value = not_found
+    r = client.get("/api/ohlc?symbol=POLYGON:INVALID_XXX&interval=1h&start=2025-01-01&end=2025-03-01")
+    assert r.status_code == 404
+
+
+@patch("data._session")
+def test_ohlc_polygon_no_key_returns_400(mock_session, monkeypatch):
+    monkeypatch.delenv("POLYGON_API_KEY", raising=False)
+    # Use a ticker not seen in other tests so there's no cached data
+    r = client.get("/api/ohlc?symbol=POLYGON:C:EURUSD_NOKEY&interval=1h&start=2025-01-01&end=2025-03-01")
+    assert r.status_code == 400
+    assert "API key" in r.json()["detail"]
+
+
+# ── parse_symbol ──────────────────────────────────────────────────────────────
+
+def test_parse_symbol_bare_is_yahoo():
+    import data
+    assert data.parse_symbol("GC=F") == ("yahoo", "GC=F")
+
+
+def test_parse_symbol_yahoo_prefix():
+    import data
+    assert data.parse_symbol("YAHOO:GC=F") == ("yahoo", "GC=F")
+
+
+def test_parse_symbol_polygon_prefix():
+    import data
+    assert data.parse_symbol("POLYGON:C:XAUUSD") == ("polygon", "C:XAUUSD")
