@@ -27,6 +27,7 @@ export default function App() {
   const [interval, setInterval] = useState('1h')
   const [date, setDate] = useState(today())
   const [bars, setBars] = useState(null)
+  const [chartCenter, setChartCenter] = useState(today())  // only updated on explicit user picks
   const [chartError, setChartError] = useState(null)
   const [loading, setLoading] = useState(false)
   const [toast, setToast] = useState(null)
@@ -46,7 +47,7 @@ export default function App() {
       .then((prefs) => {
         if (prefs.ticker) setActiveTicker(prefs.ticker)
         if (prefs.interval) setInterval(prefs.interval)
-        if (prefs.date) setDate(prefs.date)
+        if (prefs.date) { setDate(prefs.date); setChartCenter(prefs.date) }
         setPrefsLoaded(true)
       })
       .catch((e) => {
@@ -104,18 +105,31 @@ export default function App() {
 
   const handleSelect = (ticker) => {
     setActiveTicker(ticker)
+    setBars([])  // clear so new ticker's data centers correctly
+    setChartCenter(date)
     if (prefsLoaded) savePreferences({ ticker, interval, date }).catch(() => {})
   }
 
   const handleIntervalChange = (v) => {
     setInterval(v)
+    setBars([])  // clear so new interval's data centers correctly
+    setChartCenter(date)
     if (prefsLoaded) savePreferences({ ticker: activeTicker, interval: v, date }).catch(() => {})
   }
 
   const handleDateChange = (v) => {
     setDate(v)
+    setChartCenter(v)  // explicit pick — chart should re-center
     if (prefsLoaded) savePreferences({ ticker: activeTicker, interval, date: v }).catch(() => {})
   }
+
+  // Called by Chart when the user drags/scrolls to a new date.
+  // Updates the date picker and triggers a fetch for the new center, but does NOT
+  // re-center the chart (the viewport stays where the user dragged).
+  const handleScrolledTo = useCallback((newCenter) => {
+    setDate(newCenter)
+    // Intentionally do not update chartCenter — no re-centering on drag
+  }, [])
 
   const handleAdd = ({ ticker, label }) => {
     if (tickers.find((t) => t.ticker === ticker)) {
@@ -193,7 +207,8 @@ export default function App() {
           <Chart
             bars={bars}
             interval={interval}
-            targetDate={date}
+            targetDate={chartCenter}
+            onScrolledTo={handleScrolledTo}
             loading={loading}
             errorMessage={chartError}
           />
