@@ -1,10 +1,13 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import Chart from './components/Chart.jsx'
 import Toolbar from './components/Toolbar.jsx'
 import TickerList from './components/TickerList.jsx'
 import Toast from './components/Toast.jsx'
 import AuthPage from './components/AuthPage.jsx'
 import InviteButton from './components/InviteButton.jsx'
+import DrawingToolbar from './components/DrawingToolbar.jsx'
+import LayoutManager from './components/LayoutManager.jsx'
+import { DEFAULT_FIB_LEVELS } from './components/DrawingCanvas.jsx'
 import {
   fetchOHLC,
   fetchWatchlist,
@@ -13,25 +16,44 @@ import {
   savePreferences,
   fetchMe,
   windowForInterval,
+  fetchLayouts,
+  createLayout,
+  updateLayout,
+  deleteLayout,
 } from './api.js'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
+// Default fib levels persisted per layout
+const DEFAULT_LAYOUT_NAME = 'Default'
+
 export default function App() {
-  const [token, setToken] = useState(() => localStorage.getItem('cv_token'))
+  const [token, setToken]           = useState(() => localStorage.getItem('cv_token'))
   const [prefsLoaded, setPrefsLoaded] = useState(false)
   const [currentUser, setCurrentUser] = useState(null)
 
-  const [tickers, setTickers] = useState([])
+  const [tickers, setTickers]         = useState([])
   const [activeTicker, setActiveTicker] = useState(null)
-  const [interval, setInterval] = useState('1h')
-  const [date, setDate] = useState(today())
-  const [bars, setBars] = useState(null)
-  const [chartCenter, setChartCenter] = useState(today())  // only updated on explicit user picks
-  const [chartError, setChartError] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [toast, setToast] = useState(null)
+  const [interval, setInterval]       = useState('1h')
+  const [date, setDate]               = useState(today())
+  const [bars, setBars]               = useState(null)
+  const [chartCenter, setChartCenter] = useState(today())
+  const [chartError, setChartError]   = useState(null)
+  const [loading, setLoading]         = useState(false)
+  const [toast, setToast]             = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+
+  // ── Drawing state ──────────────────────────────────────────────────────────
+  const [drawingTool, setDrawingTool] = useState('cursor')
+  const [fibLevels, setFibLevels]     = useState(DEFAULT_FIB_LEVELS)  // eslint-disable-line no-unused-vars
+
+  // ── Layout state ───────────────────────────────────────────────────────────
+  const [layouts, setLayouts]               = useState([])
+  const [activeLayoutId, setActiveLayoutId] = useState(null)
+  // drawings for the current layout (array of drawing objects)
+  const [drawings, setDrawings]             = useState([])
+  // Debounce timer ref for auto-saving drawings
+  const saveDrawingsTimer = useRef(null)
 
   const handleSessionExpired = () => {
     localStorage.removeItem('cv_token')
@@ -40,20 +62,40 @@ export default function App() {
     setCurrentUser(null)
   }
 
-  // Load preferences, watchlist, and sources once token is available
+  // ── Startup: load prefs, watchlist, user info, layouts ────────────────────
   useEffect(() => {
     if (!token) return
+
     fetchPreferences()
       .then((prefs) => {
-        if (prefs.ticker) setActiveTicker(prefs.ticker)
+        if (prefs.ticker)   setActiveTicker(prefs.ticker)
         if (prefs.interval) setInterval(prefs.interval)
-        if (prefs.date) { setDate(prefs.date); setChartCenter(prefs.date) }
+        if (prefs.date)     { setDate(prefs.date); setChartCenter(prefs.date) }
         setPrefsLoaded(true)
+        return prefs.active_layout_id ?? null
+      })
+      .then((savedLayoutId) => {
+        return fetchLayouts().then(({ layouts: ls }) => {
+          if (ls.length === 0) {
+            // Create the default layout on first run
+            return createLayout(DEFAULT_LAYOUT_NAME).then((created) => {
+              const first = { id: created.id, name: created.name, drawings: '[]' }
+              setLayouts([first])
+              setActiveLayoutId(first.id)
+              setDrawings([])
+            })
+          }
+          setLayouts(ls)
+          const target = ls.find((l) => l.id === savedLayoutId) ?? ls[0]
+          setActiveLayoutId(target.id)
+          setDrawings(parseDrawings(target.drawings))
+        })
       })
       .catch((e) => {
         if (e.status === 401) handleSessionExpired()
         else setPrefsLoaded(true)
       })
+
     fetchWatchlist()
       .then((data) => {
         setTickers(data.symbols)
@@ -61,14 +103,14 @@ export default function App() {
           setActiveTicker(data.symbols[0].ticker)
         }
       })
-      .catch((e) => {
-        if (e.status === 401) handleSessionExpired()
-      })
+      .catch((e) => { if (e.status === 401) handleSessionExpired() })
+
     fetchMe()
       .then(setCurrentUser)
       .catch(() => {})
   }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── OHLC data loading ──────────────────────────────────────────────────────
   const loadData = useCallback(async () => {
     if (!activeTicker) return
     setLoading(true)
@@ -80,7 +122,7 @@ export default function App() {
       if (result.bars.length === 0) {
         setToast(`No data found for ${activeTicker}`)
       } else {
-        const centerMs = new Date(date).getTime()
+        const centerMs   = new Date(date).getTime()
         const firstBarMs = result.bars[0].ts * 1000
         if (firstBarMs > centerMs + 3 * 86400_000) {
           const firstDate = new Date(firstBarMs).toLocaleDateString()
@@ -103,34 +145,32 @@ export default function App() {
     if (prefsLoaded) loadData()
   }, [loadData, prefsLoaded])
 
+  // ── Ticker / interval / date handlers ─────────────────────────────────────
   const handleSelect = (ticker) => {
     setActiveTicker(ticker)
-    setBars([])  // clear so new ticker's data centers correctly
+    setBars([])
     setChartCenter(date)
-    if (prefsLoaded) savePreferences({ ticker, interval, date }).catch(() => {})
+    if (prefsLoaded) savePreferences({ ticker, interval, date, active_layout_id: activeLayoutId }).catch(() => {})
   }
 
   const handleIntervalChange = (v) => {
     setInterval(v)
-    setBars([])  // clear so new interval's data centers correctly
+    setBars([])
     setChartCenter(date)
-    if (prefsLoaded) savePreferences({ ticker: activeTicker, interval: v, date }).catch(() => {})
+    if (prefsLoaded) savePreferences({ ticker: activeTicker, interval: v, date, active_layout_id: activeLayoutId }).catch(() => {})
   }
 
   const handleDateChange = (v) => {
     setDate(v)
-    setChartCenter(v)  // explicit pick — chart should re-center
-    if (prefsLoaded) savePreferences({ ticker: activeTicker, interval, date: v }).catch(() => {})
+    setChartCenter(v)
+    if (prefsLoaded) savePreferences({ ticker: activeTicker, interval, date: v, active_layout_id: activeLayoutId }).catch(() => {})
   }
 
-  // Called by Chart when the user drags/scrolls to a new date.
-  // Updates the date picker and triggers a fetch for the new center, but does NOT
-  // re-center the chart (the viewport stays where the user dragged).
   const handleScrolledTo = useCallback((newCenter) => {
     setDate(newCenter)
-    // Intentionally do not update chartCenter — no re-centering on drag
   }, [])
 
+  // ── Watchlist handlers ─────────────────────────────────────────────────────
   const handleAdd = ({ ticker, label }) => {
     if (tickers.find((t) => t.ticker === ticker)) {
       setToast(`${label} is already in your watchlist`)
@@ -154,7 +194,88 @@ export default function App() {
     saveWatchlist(reordered).catch(() => setToast('Failed to save watchlist'))
   }
 
-  if (!token) return <AuthPage onLogin={setToken} />
+  // ── Drawing handlers ───────────────────────────────────────────────────────
+  const persistDrawings = useCallback((id, list) => {
+    clearTimeout(saveDrawingsTimer.current)
+    saveDrawingsTimer.current = setTimeout(() => {
+      updateLayout(id, { drawings: list }).catch(() => {})
+    }, 800)
+  }, [])
+
+  const handleDrawingAdd = useCallback((drawing) => {
+    setDrawings((prev) => {
+      const next = [...prev, drawing]
+      persistDrawings(activeLayoutId, next)
+      return next
+    })
+  }, [activeLayoutId, persistDrawings])
+
+  const handleDrawingUpdate = useCallback((updated) => {
+    setDrawings((prev) => {
+      const next = prev.map((d) => d.id === updated.id ? updated : d)
+      persistDrawings(activeLayoutId, next)
+      return next
+    })
+  }, [activeLayoutId, persistDrawings])
+
+  const handleDrawingDelete = useCallback((id) => {
+    setDrawings((prev) => {
+      const next = prev.filter((d) => d.id !== id)
+      persistDrawings(activeLayoutId, next)
+      return next
+    })
+  }, [activeLayoutId, persistDrawings])
+
+  const handleClearAll = useCallback(() => {
+    setDrawings([])
+    persistDrawings(activeLayoutId, [])
+  }, [activeLayoutId, persistDrawings])
+
+  // ── Layout handlers ────────────────────────────────────────────────────────
+  const handleLayoutSelect = (id) => {
+    const layout = layouts.find((l) => l.id === id)
+    if (!layout) return
+    setActiveLayoutId(id)
+    setDrawings(parseDrawings(layout.drawings))
+    savePreferences({ ticker: activeTicker, interval, date, active_layout_id: id }).catch(() => {})
+  }
+
+  const handleLayoutCreate = (name) => {
+    createLayout(name)
+      .then((created) => {
+        const newLayout = { id: created.id, name: created.name, drawings: '[]' }
+        setLayouts((prev) => [...prev, newLayout])
+        setActiveLayoutId(created.id)
+        setDrawings([])
+        savePreferences({ ticker: activeTicker, interval, date, active_layout_id: created.id }).catch(() => {})
+      })
+      .catch(() => setToast('Failed to create layout'))
+  }
+
+  const handleLayoutRename = (id, name) => {
+    updateLayout(id, { name })
+      .then(() => setLayouts((prev) => prev.map((l) => l.id === id ? { ...l, name } : l)))
+      .catch(() => setToast('Failed to rename layout'))
+  }
+
+  const handleLayoutDelete = (id) => {
+    if (layouts.length <= 1) return
+    deleteLayout(id)
+      .then(() => {
+        const remaining = layouts.filter((l) => l.id !== id)
+        setLayouts(remaining)
+        if (activeLayoutId === id) {
+          const next = remaining[0]
+          setActiveLayoutId(next.id)
+          setDrawings(parseDrawings(next.drawings))
+          savePreferences({ ticker: activeTicker, interval, date, active_layout_id: next.id }).catch(() => {})
+        }
+      })
+      .catch(() => setToast('Failed to delete layout'))
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
+  if (!token)       return <AuthPage onLogin={setToken} />
   if (!prefsLoaded) return null
 
   const activeLabel = tickers.find((t) => t.ticker === activeTicker)?.label ?? activeTicker
@@ -172,7 +293,7 @@ export default function App() {
             onRemove={handleRemove}
             onReorder={handleReorder}
           />
-          <button onClick={() => setSidebarOpen(false)} style={collapsebtnStyle} title="Hide sidebar">
+          <button onClick={() => setSidebarOpen(false)} style={collapseBtnStyle} title="Hide sidebar">
             ‹
           </button>
         </div>
@@ -183,9 +304,16 @@ export default function App() {
         </button>
       )}
 
+      {/* Drawing toolbar */}
+      <DrawingToolbar
+        activeTool={drawingTool}
+        onToolChange={setDrawingTool}
+        onClearAll={handleClearAll}
+      />
+
       {/* Main panel */}
       <div style={mainStyle}>
-        {/* Top bar: symbol name + toolbar */}
+        {/* Top bar */}
         <div style={topBarStyle}>
           <span style={symbolNameStyle}>{activeLabel}</span>
           <Toolbar
@@ -195,6 +323,14 @@ export default function App() {
             onDateChange={handleDateChange}
           />
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px' }}>
+            <LayoutManager
+              layouts={layouts}
+              activeLayoutId={activeLayoutId}
+              onSelect={handleLayoutSelect}
+              onCreate={handleLayoutCreate}
+              onRename={handleLayoutRename}
+              onDelete={handleLayoutDelete}
+            />
             {currentUser?.is_admin && <InviteButton />}
             <button style={logoutBtnStyle} onClick={handleSessionExpired} title={`Sign out (${currentUser?.username})`}>
               Sign out
@@ -211,92 +347,114 @@ export default function App() {
             onScrolledTo={handleScrolledTo}
             loading={loading}
             errorMessage={chartError}
+            drawingTool={drawingTool}
+            drawings={drawings}
+            fibLevels={fibLevels}
+            onDrawingAdd={handleDrawingAdd}
+            onDrawingUpdate={handleDrawingUpdate}
+            onDrawingDelete={handleDrawingDelete}
+            onToolChange={setDrawingTool}
           />
         </div>
       </div>
+
       <Toast message={toast} onDismiss={() => setToast(null)} />
     </div>
   )
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function parseDrawings(raw) {
+  if (!raw) return []
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+// ── Styles ────────────────────────────────────────────────────────────────────
+
 const appStyle = {
-  display: 'flex',
-  height: '100vh',
+  display:    'flex',
+  height:     '100vh',
   fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-  color: '#c9d1d9',
-  overflow: 'hidden',
+  color:      '#c9d1d9',
+  overflow:   'hidden',
 }
 
 const mainStyle = {
-  flex: 1,
-  display: 'flex',
+  flex:      1,
+  display:   'flex',
   flexDirection: 'column',
-  overflow: 'hidden',
+  overflow:  'hidden',
 }
 
 const topBarStyle = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 12,
-  flexWrap: 'wrap',
+  display:     'flex',
+  alignItems:  'center',
+  gap:         12,
+  flexWrap:    'wrap',
 }
 
 const symbolNameStyle = {
-  padding: '8px 16px',
-  fontSize: 15,
-  fontWeight: 700,
-  color: '#e6edf3',
-  background: '#161b22',
+  padding:      '8px 16px',
+  fontSize:     15,
+  fontWeight:   700,
+  color:        '#e6edf3',
+  background:   '#161b22',
   borderBottom: '1px solid #30363d',
-  whiteSpace: 'nowrap',
+  whiteSpace:   'nowrap',
 }
 
 const chartWrapStyle = {
-  flex: 1,
+  flex:     1,
   overflow: 'hidden',
 }
 
-const collapsebtnStyle = {
-  position: 'absolute',
-  right: -12,
-  top: '50%',
-  transform: 'translateY(-50%)',
-  zIndex: 10,
-  width: 20,
-  height: 48,
-  background: '#21262d',
-  border: '1px solid #30363d',
-  borderRadius: '0 4px 4px 0',
-  color: '#6e7681',
-  fontSize: 16,
-  cursor: 'pointer',
-  display: 'flex',
-  alignItems: 'center',
+const collapseBtnStyle = {
+  position:       'absolute',
+  right:          -12,
+  top:            '50%',
+  transform:      'translateY(-50%)',
+  zIndex:         10,
+  width:          20,
+  height:         48,
+  background:     '#21262d',
+  border:         '1px solid #30363d',
+  borderRadius:   '0 4px 4px 0',
+  color:          '#6e7681',
+  fontSize:       16,
+  cursor:         'pointer',
+  display:        'flex',
+  alignItems:     'center',
   justifyContent: 'center',
-  padding: 0,
+  padding:        0,
 }
 
 const logoutBtnStyle = {
-  padding: '4px 10px',
+  padding:    '4px 10px',
   background: 'none',
-  border: '1px solid #30363d',
+  border:     '1px solid #30363d',
   borderRadius: 6,
-  color: '#8b949e',
-  fontSize: 13,
-  cursor: 'pointer',
+  color:      '#8b949e',
+  fontSize:   13,
+  cursor:     'pointer',
   whiteSpace: 'nowrap',
 }
 
 const expandBtnStyle = {
-  width: 20,
-  minWidth: 20,
-  background: '#21262d',
-  border: '1px solid #30363d',
-  borderLeft: 'none',
+  width:        20,
+  minWidth:     20,
+  background:   '#21262d',
+  border:       '1px solid #30363d',
+  borderLeft:   'none',
   borderRadius: '0 4px 4px 0',
-  color: '#6e7681',
-  fontSize: 16,
-  cursor: 'pointer',
-  padding: 0,
-  alignSelf: 'stretch',
+  color:        '#6e7681',
+  fontSize:     16,
+  cursor:       'pointer',
+  padding:      0,
+  alignSelf:    'stretch',
 }

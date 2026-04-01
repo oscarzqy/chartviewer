@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { createChart, CrosshairMode } from 'lightweight-charts'
+import DrawingCanvas from './DrawingCanvas.jsx'
 
 const CHART_THEME = {
   layout: {
@@ -41,19 +42,34 @@ const VISIBLE_BARS = {
   '1d': 120, '1wk': 104, '1mo': 60, '1y': 20,
 }
 
-export default function Chart({ bars, interval, targetDate, onScrolledTo, loading, errorMessage }) {
+export default function Chart({
+  bars,
+  interval,
+  targetDate,
+  onScrolledTo,
+  loading,
+  errorMessage,
+  // Drawing props
+  drawingTool,
+  drawings,
+  fibLevels,
+  onDrawingAdd,
+  onDrawingUpdate,
+  onDrawingDelete,
+  onToolChange,
+}) {
   const containerRef = useRef(null)
-  const chartRef = useRef(null)
-  const seriesRef = useRef(null)
+  const chartRef     = useRef(null)
+  const seriesRef    = useRef(null)
 
   // Refs to avoid stale closures in stable callbacks
-  const formattedRef = useRef([])
+  const formattedRef      = useRef([])
   const suppressScrollRef = useRef(false)
-  const onScrolledToRef = useRef(onScrolledTo)
-  const targetDateRef = useRef(targetDate)
-  const intervalRef = useRef(interval)
+  const onScrolledToRef   = useRef(onScrolledTo)
+  const targetDateRef     = useRef(targetDate)
+  const intervalRef       = useRef(interval)
   // true = next bars load should center the chart; false = restore current viewport
-  const centerPendingRef = useRef(true)
+  const centerPendingRef  = useRef(true)
 
   useEffect(() => { onScrolledToRef.current = onScrolledTo }, [onScrolledTo])
   useEffect(() => { targetDateRef.current = targetDate }, [targetDate])
@@ -124,10 +140,17 @@ export default function Chart({ bars, interval, targetDate, onScrolledTo, loadin
     }
   }, [])
 
+  // Disable chart mouse scroll when a drawing tool is active (not cursor)
+  useEffect(() => {
+    if (!chartRef.current) return
+    const drawing = drawingTool && drawingTool !== 'cursor'
+    chartRef.current.applyOptions({
+      handleScroll:  { mouseWheel: !drawing, pressedMouseMove: !drawing, horzTouchDrag: !drawing, vertTouchDrag: !drawing },
+      handleScale:   { mouseWheel: !drawing, pinch: !drawing, axisPressedMouseMove: !drawing },
+    })
+  }, [drawingTool])
+
   // Effect: update series data when bars change.
-  // If the chart was empty (initial / ticker / interval change) OR an explicit re-center
-  // was requested, center the viewport. Otherwise preserve the user's scroll position
-  // so drag-triggered loads don't snap the chart back.
   useEffect(() => {
     if (!seriesRef.current || !bars || !chartRef.current) return
 
@@ -140,7 +163,6 @@ export default function Chart({ bars, interval, targetDate, onScrolledTo, loadin
     }))
 
     const wasEmpty = formattedRef.current.length === 0
-    // Save viewport BEFORE setData (which may reset it)
     const savedRange = wasEmpty ? null : chartRef.current.timeScale().getVisibleRange()
 
     formattedRef.current = formatted
@@ -150,7 +172,6 @@ export default function Chart({ bars, interval, targetDate, onScrolledTo, loadin
 
     if (formatted.length === 0) return
 
-    // Price precision based on the median close price
     const mid = formatted[Math.floor(formatted.length / 2)].close
     const priceFormat = mid < 2     ? { precision: 5, minMove: 0.00001 }
                       : mid < 20    ? { precision: 4, minMove: 0.0001  }
@@ -160,11 +181,9 @@ export default function Chart({ bars, interval, targetDate, onScrolledTo, loadin
     seriesRef.current.applyOptions({ priceFormat: { type: 'price', ...priceFormat } })
 
     if (wasEmpty || centerPendingRef.current) {
-      // Fresh data load or explicit pick — center on targetDate
       centerPendingRef.current = false
       centerViewport(formatted)
     } else if (savedRange) {
-      // Drag-triggered load — restore the user's scroll position
       suppressScrollRef.current = true
       chartRef.current.timeScale().setVisibleRange(savedRange)
       suppressScrollRef.current = false
@@ -172,8 +191,7 @@ export default function Chart({ bars, interval, targetDate, onScrolledTo, loadin
   }, [bars, centerViewport])
 
   // Effect: when targetDate or interval changes explicitly (user pick / ticker switch),
-  // mark that the next bars load should re-center, and center immediately with
-  // whatever data is already loaded for instant feedback.
+  // mark that the next bars load should re-center.
   useEffect(() => {
     centerPendingRef.current = true
     if (formattedRef.current.length > 0) {
@@ -184,6 +202,20 @@ export default function Chart({ bars, interval, targetDate, onScrolledTo, loadin
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+
+      {/* Drawing canvas — sits above the chart */}
+      <DrawingCanvas
+        chartRef={chartRef}
+        seriesRef={seriesRef}
+        tool={drawingTool ?? 'cursor'}
+        drawings={drawings ?? []}
+        fibLevels={fibLevels}
+        onDrawingAdd={onDrawingAdd ?? (() => {})}
+        onDrawingUpdate={onDrawingUpdate}
+        onDrawingDelete={onDrawingDelete}
+        onToolChange={onToolChange}
+      />
+
       {loading && (
         <div style={loadingOverlayStyle}>Loading…</div>
       )}

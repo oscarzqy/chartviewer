@@ -133,3 +133,32 @@ export async function savePreferences(prefs) {
     body: JSON.stringify(prefs),
   })
 }
+
+// ── Layouts ───────────────────────────────────────────────────────────────────
+
+export async function fetchLayouts() {
+  return request(`${API}/layouts`)
+}
+
+export async function createLayout(name) {
+  return request(`${API}/layouts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+}
+
+export async function updateLayout(id, { name, drawings }) {
+  const body = {}
+  if (name !== undefined) body.name = name
+  if (drawings !== undefined) body.drawings = typeof drawings === 'string' ? drawings : JSON.stringify(drawings)
+  return request(`${API}/layouts/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function deleteLayout(id) {
+  return request(`${API}/layouts/${id}`, { method: 'DELETE' })
+}

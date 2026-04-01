@@ -62,8 +62,18 @@ def init_db():
                 interval TEXT,
                 date     TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS layouts (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL REFERENCES users(id),
+                name       TEXT    NOT NULL,
+                drawings   TEXT    NOT NULL DEFAULT '[]',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
         """)
         _migrate_watchlist(conn)
+        _migrate_preferences_v2(conn)
 
 
 def _migrate_watchlist(conn: sqlite3.Connection):
@@ -207,6 +217,13 @@ def migrate_watchlist_to_user(user_id: int) -> int:
     return len(rows)
 
 
+def _migrate_preferences_v2(conn: sqlite3.Connection):
+    """Add active_layout_id column to preferences if absent."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(preferences)").fetchall()}
+    if "active_layout_id" not in cols:
+        conn.execute("ALTER TABLE preferences ADD COLUMN active_layout_id INTEGER")
+
+
 # ── Users ─────────────────────────────────────────────────────────────────────
 
 def get_user_by_id(user_id: int) -> dict | None:
@@ -273,15 +290,88 @@ def consume_invite_token(token: str, used_by: int) -> bool:
 def get_preferences(user_id: int) -> dict:
     with _connect() as conn:
         row = conn.execute(
-            "SELECT ticker, interval, date FROM preferences WHERE user_id = ?",
+            "SELECT ticker, interval, date, active_layout_id FROM preferences WHERE user_id = ?",
             (user_id,),
         ).fetchone()
     return dict(row) if row else {}
 
 
-def set_preferences(user_id: int, ticker: str | None, interval: str | None, date: str | None):
+def set_preferences(
+    user_id: int,
+    ticker: str | None,
+    interval: str | None,
+    date: str | None,
+    active_layout_id: int | None = None,
+):
     with _connect() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO preferences (user_id, ticker, interval, date) VALUES (?, ?, ?, ?)",
-            (user_id, ticker, interval, date),
+            """INSERT OR REPLACE INTO preferences (user_id, ticker, interval, date, active_layout_id)
+               VALUES (?, ?, ?, ?, ?)""",
+            (user_id, ticker, interval, date, active_layout_id),
         )
+
+
+# ── Layouts ───────────────────────────────────────────────────────────────────
+
+def get_layouts(user_id: int) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, name, drawings, created_at, updated_at FROM layouts WHERE user_id = ? ORDER BY created_at",
+            (user_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_layout(user_id: int, name: str) -> int:
+    now = int(datetime.now(timezone.utc).timestamp())
+    with _connect() as conn:
+        result = conn.execute(
+            "INSERT INTO layouts (user_id, name, drawings, created_at, updated_at) VALUES (?, ?, '[]', ?, ?)",
+            (user_id, name, now, now),
+        )
+    return result.lastrowid
+
+
+def get_layout(layout_id: int, user_id: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id, name, drawings FROM layouts WHERE id = ? AND user_id = ?",
+            (layout_id, user_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def update_layout(
+    layout_id: int,
+    user_id: int,
+    name: str | None = None,
+    drawings: str | None = None,
+) -> bool:
+    now = int(datetime.now(timezone.utc).timestamp())
+    updates: list[str] = []
+    params: list = []
+    if name is not None:
+        updates.append("name = ?")
+        params.append(name)
+    if drawings is not None:
+        updates.append("drawings = ?")
+        params.append(drawings)
+    if not updates:
+        return True
+    updates.append("updated_at = ?")
+    params.extend([now, layout_id, user_id])
+    with _connect() as conn:
+        result = conn.execute(
+            f"UPDATE layouts SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
+            params,
+        )
+    return result.rowcount > 0
+
+
+def delete_layout(layout_id: int, user_id: int) -> bool:
+    with _connect() as conn:
+        result = conn.execute(
+            "DELETE FROM layouts WHERE id = ? AND user_id = ?",
+            (layout_id, user_id),
+        )
+    return result.rowcount > 0

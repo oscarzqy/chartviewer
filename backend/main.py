@@ -67,6 +67,16 @@ class PreferencesPayload(BaseModel):
     ticker: str | None = None
     interval: str | None = None
     date: str | None = None
+    active_layout_id: int | None = None
+
+
+class LayoutCreate(BaseModel):
+    name: str
+
+
+class LayoutUpdate(BaseModel):
+    name: str | None = None
+    drawings: str | None = None  # JSON string
 
 
 # ── Auth routes ───────────────────────────────────────────────────────────────
@@ -163,8 +173,42 @@ def get_preferences(user: CurrentUser):
 
 @app.put("/api/preferences")
 def save_preferences(payload: PreferencesPayload, user: CurrentUser):
-    cache.set_preferences(user["id"], payload.ticker, payload.interval, payload.date)
-    return {"ticker": payload.ticker, "interval": payload.interval, "date": payload.date}
+    cache.set_preferences(
+        user["id"], payload.ticker, payload.interval, payload.date, payload.active_layout_id
+    )
+    return {
+        "ticker": payload.ticker,
+        "interval": payload.interval,
+        "date": payload.date,
+        "active_layout_id": payload.active_layout_id,
+    }
+
+
+@app.get("/api/layouts")
+def get_layouts(user: CurrentUser):
+    return {"layouts": cache.get_layouts(user["id"])}
+
+
+@app.post("/api/layouts")
+def create_layout(body: LayoutCreate, user: CurrentUser):
+    layout_id = cache.create_layout(user["id"], body.name)
+    return {"id": layout_id, "name": body.name, "drawings": "[]"}
+
+
+@app.put("/api/layouts/{layout_id}")
+def update_layout(layout_id: int, body: LayoutUpdate, user: CurrentUser):
+    ok = cache.update_layout(layout_id, user["id"], name=body.name, drawings=body.drawings)
+    if not ok:
+        raise HTTPException(404, "Layout not found")
+    return {"ok": True}
+
+
+@app.delete("/api/layouts/{layout_id}")
+def delete_layout(layout_id: int, user: CurrentUser):
+    ok = cache.delete_layout(layout_id, user["id"])
+    if not ok:
+        raise HTTPException(404, "Layout not found")
+    return {"ok": True}
 
 
 @app.get("/api/search")
