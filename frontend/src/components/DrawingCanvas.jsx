@@ -29,9 +29,11 @@ const TOOL_COLOR = {
 }
 
 const TWO_POINT = new Set([
-  'trendline', 'ray', 'fib_retracement', 'rectangle',
-  'long_position', 'short_position', 'arrow',
+  'trendline', 'ray', 'fib_retracement', 'rectangle', 'arrow',
 ])
+
+// Three-click tools: click 1 = entry, click 2 = take profit, click 3 = stop loss
+const THREE_POINT = new Set(['long_position', 'short_position'])
 
 const HANDLE_R   = 6    // handle circle radius px
 const HIT_LINE   = 10   // px from line to count as a hit
@@ -115,9 +117,7 @@ function hitTest(drawing, px, py, coords, W, H) {
       }
       return null
     }
-    case 'rectangle':
-    case 'long_position':
-    case 'short_position': {
+    case 'rectangle': {
       if (x1 == null || y1 == null || !p2) return null
       const x2 = coords.toX(p2.time), y2 = coords.toY(p2.price)
       if (x2 == null || y2 == null) return null
@@ -125,6 +125,28 @@ function hitTest(drawing, px, py, coords, W, H) {
       const rw = Math.abs(x2 - x1),  rh = Math.abs(y2 - y1)
       if (px >= rx - HIT_LINE && px <= rx + rw + HIT_LINE &&
           py >= ry - HIT_LINE && py <= ry + rh + HIT_LINE) return 'body'
+      return null
+    }
+    case 'long_position':
+    case 'short_position': {
+      if (x1 == null || y1 == null) return null
+      // p3 handle check first
+      if (drawing.p3) {
+        const y3 = coords.toY(drawing.p3.price)
+        if (y3 != null && Math.hypot(px - x1, py - y3) <= HIT_HANDLE) return 'p3'
+      }
+      // Bounding box covers entry + TP + SL
+      const prices = [p1.price]
+      if (p2) prices.push(p2.price)
+      if (drawing.p3) prices.push(drawing.p3.price)
+      const x2 = p2 ? coords.toX(p2.time) : x1
+      if (x2 == null) return null
+      const rx = Math.min(x1, x2), rw = Math.abs(x2 - x1)
+      const yTop = coords.toY(Math.max(...prices))
+      const yBot = coords.toY(Math.min(...prices))
+      if (yTop == null || yBot == null) return null
+      if (px >= rx - HIT_LINE && px <= rx + rw + HIT_LINE &&
+          py >= yTop - HIT_LINE && py <= yBot + HIT_LINE) return 'body'
       return null
     }
     case 'arrow_mark_up':
@@ -140,6 +162,7 @@ function hitTest(drawing, px, py, coords, W, H) {
 function renderHandles(ctx, drawing, coords) {
   const points = [drawing.p1]
   if (drawing.p2) points.push(drawing.p2)
+  if (drawing.p3) points.push(drawing.p3)
   const color = drawing.style?.color ?? TOOL_COLOR[drawing.type] ?? '#2196F3'
 
   for (const p of points) {
@@ -203,14 +226,27 @@ function renderSelectionGlow(ctx, drawing, coords, W, H) {
       }
       break
     }
-    case 'rectangle':
-    case 'long_position':
-    case 'short_position': {
+    case 'rectangle': {
       if (!p2) break
       const x2 = coords.toX(p2.time), y2 = coords.toY(p2.price)
       if (x2 == null || y2 == null) break
       const rx = Math.min(x1, x2), ry = Math.min(y1, y2)
       ctx.strokeRect(rx, ry, Math.abs(x2 - x1), Math.abs(y2 - y1))
+      break
+    }
+    case 'long_position':
+    case 'short_position': {
+      if (!p2) break
+      const x2 = coords.toX(p2.time), y2 = coords.toY(p2.price)
+      if (x2 == null || y2 == null) break
+      const prices = [p1.price, p2.price]
+      if (drawing.p3) prices.push(drawing.p3.price)
+      const rx   = Math.min(x1, x2)
+      const rw   = Math.abs(x2 - x1)
+      const yTop = coords.toY(Math.max(...prices))
+      const yBot = coords.toY(Math.min(...prices))
+      if (yTop != null && yBot != null)
+        ctx.strokeRect(rx, yTop, rw, yBot - yTop)
       break
     }
     case 'arrow_mark_up': {
@@ -317,16 +353,42 @@ function renderDrawing(ctx, drawing, coords, W, H, preview = false) {
       const x2 = coords.toX(p2.time), y2 = coords.toY(p2.price)
       if (x2 == null || y2 == null) break
       const rx = Math.min(x1, x2), rw = Math.abs(x2 - x1)
-      const entryY = y1, targetY = Math.min(y1, y2)
+      const entryY = y1
+      const tpY    = Math.min(y1, y2)   // take profit — above entry (smaller y)
+
+      // Take-profit zone (green)
       ctx.fillStyle   = '#26a641'; ctx.strokeStyle = '#26a641'
       ctx.globalAlpha = preview ? 0.12 : 0.18
-      ctx.fillRect(rx, targetY, rw, entryY - targetY)
+      ctx.fillRect(rx, tpY, rw, entryY - tpY)
       ctx.globalAlpha = preview ? 0.65 : 1
-      ctx.strokeRect(rx, targetY, rw, entryY - targetY)
+      ctx.strokeRect(rx, tpY, rw, entryY - tpY)
       ctx.beginPath(); ctx.moveTo(rx, entryY); ctx.lineTo(rx + rw, entryY); ctx.stroke()
       ctx.font = 'bold 11px sans-serif'; ctx.fillStyle = '#26a641'
       ctx.globalAlpha = preview ? 0.65 : 0.9
-      ctx.fillText('Long', rx + 4, (targetY + entryY) / 2 + 4)
+      ctx.fillText('TP  ' + p2.price.toFixed(5), rx + 4, tpY + 14)
+
+      // Stop-loss zone (red) — only when p3 is set
+      const p3 = drawing.p3
+      if (p3) {
+        const slY = coords.toY(p3.price)
+        if (slY != null) {
+          const slBottom = Math.max(entryY, slY)
+          const slTop    = Math.min(entryY, slY)
+          ctx.fillStyle   = '#f85149'; ctx.strokeStyle = '#f85149'
+          ctx.globalAlpha = preview ? 0.12 : 0.18
+          ctx.fillRect(rx, slTop, rw, slBottom - slTop)
+          ctx.globalAlpha = preview ? 0.65 : 1
+          ctx.strokeRect(rx, slTop, rw, slBottom - slTop)
+          ctx.font = 'bold 11px sans-serif'; ctx.fillStyle = '#f85149'
+          ctx.globalAlpha = preview ? 0.65 : 0.9
+          ctx.fillText('SL  ' + p3.price.toFixed(5), rx + 4, slBottom - 4)
+        }
+      }
+
+      // Entry label
+      ctx.fillStyle = '#e6edf3'; ctx.strokeStyle = '#e6edf3'
+      ctx.globalAlpha = preview ? 0.65 : 0.9
+      ctx.fillText('Entry  ' + p1.price.toFixed(5), rx + 4, entryY - 4)
       break
     }
     case 'short_position': {
@@ -334,16 +396,42 @@ function renderDrawing(ctx, drawing, coords, W, H, preview = false) {
       const x2 = coords.toX(p2.time), y2 = coords.toY(p2.price)
       if (x2 == null || y2 == null) break
       const rx = Math.min(x1, x2), rw = Math.abs(x2 - x1)
-      const entryY = y1, targetY = Math.max(y1, y2)
-      ctx.fillStyle   = '#f85149'; ctx.strokeStyle = '#f85149'
+      const entryY = y1
+      const tpY    = Math.max(y1, y2)   // take profit — below entry (larger y)
+
+      // Take-profit zone (green)
+      ctx.fillStyle   = '#26a641'; ctx.strokeStyle = '#26a641'
       ctx.globalAlpha = preview ? 0.12 : 0.18
-      ctx.fillRect(rx, entryY, rw, targetY - entryY)
+      ctx.fillRect(rx, entryY, rw, tpY - entryY)
       ctx.globalAlpha = preview ? 0.65 : 1
-      ctx.strokeRect(rx, entryY, rw, targetY - entryY)
+      ctx.strokeRect(rx, entryY, rw, tpY - entryY)
       ctx.beginPath(); ctx.moveTo(rx, entryY); ctx.lineTo(rx + rw, entryY); ctx.stroke()
-      ctx.font = 'bold 11px sans-serif'; ctx.fillStyle = '#f85149'
+      ctx.font = 'bold 11px sans-serif'; ctx.fillStyle = '#26a641'
       ctx.globalAlpha = preview ? 0.65 : 0.9
-      ctx.fillText('Short', rx + 4, (entryY + targetY) / 2 + 4)
+      ctx.fillText('TP  ' + p2.price.toFixed(5), rx + 4, tpY - 4)
+
+      // Stop-loss zone (red)
+      const p3 = drawing.p3
+      if (p3) {
+        const slY = coords.toY(p3.price)
+        if (slY != null) {
+          const slTop    = Math.min(entryY, slY)
+          const slBottom = Math.max(entryY, slY)
+          ctx.fillStyle   = '#f85149'; ctx.strokeStyle = '#f85149'
+          ctx.globalAlpha = preview ? 0.12 : 0.18
+          ctx.fillRect(rx, slTop, rw, slBottom - slTop)
+          ctx.globalAlpha = preview ? 0.65 : 1
+          ctx.strokeRect(rx, slTop, rw, slBottom - slTop)
+          ctx.font = 'bold 11px sans-serif'; ctx.fillStyle = '#f85149'
+          ctx.globalAlpha = preview ? 0.65 : 0.9
+          ctx.fillText('SL  ' + p3.price.toFixed(5), rx + 4, slTop + 14)
+        }
+      }
+
+      // Entry label
+      ctx.fillStyle = '#e6edf3'; ctx.strokeStyle = '#e6edf3'
+      ctx.globalAlpha = preview ? 0.65 : 0.9
+      ctx.fillText('Entry  ' + p1.price.toFixed(5), rx + 4, entryY - 4)
       break
     }
     case 'arrow': {
@@ -452,17 +540,37 @@ export default function DrawingCanvas({
         if (isSelected || isActive) renderHandles(ctx, d, coords)
       }
 
-      // Preview while placing second point
-      if (pendingRef.current && mp && TWO_POINT.has(curTool)) {
+      // Preview while placing
+      if (pendingRef.current && mp) {
         const mTime  = coords.fromX(mp.x)
         const mPrice = coords.fromY(mp.y)
         if (mTime != null && mPrice != null) {
-          renderDrawing(ctx, {
-            id: '_preview', type: curTool,
-            p1: pendingRef.current,
-            p2: { time: mTime, price: mPrice },
-            fibLevels: fibRef.current ?? DEFAULT_FIB_LEVELS,
-          }, coords, w, h, true)
+          if (TWO_POINT.has(curTool)) {
+            renderDrawing(ctx, {
+              id: '_preview', type: curTool,
+              p1: pendingRef.current,
+              p2: { time: mTime, price: mPrice },
+              fibLevels: fibRef.current ?? DEFAULT_FIB_LEVELS,
+            }, coords, w, h, true)
+          } else if (THREE_POINT.has(curTool)) {
+            const pending = pendingRef.current
+            if (!pending.p2) {
+              // Showing entry → mouse as TP preview
+              renderDrawing(ctx, {
+                id: '_preview', type: curTool,
+                p1: pending.p1,
+                p2: { time: mTime, price: mPrice },
+              }, coords, w, h, true)
+            } else {
+              // Showing full preview with SL at mouse
+              renderDrawing(ctx, {
+                id: '_preview', type: curTool,
+                p1: pending.p1,
+                p2: pending.p2,
+                p3: { time: mTime, price: mPrice },
+              }, coords, w, h, true)
+            }
+          }
         }
       }
     })
@@ -584,14 +692,17 @@ export default function DrawingCanvas({
         updated = { ...drawing, p1: { time: mTime, price: mPrice } }
       } else if (drag.handle === 'p2') {
         updated = { ...drawing, p2: { time: mTime, price: mPrice } }
+      } else if (drag.handle === 'p3') {
+        updated = { ...drawing, p3: { time: mTime, price: mPrice } }
       } else {
-        // body — translate both points
+        // body — translate all points
         const dt = mTime  - drag.startMouse.time
         const dp = mPrice - drag.startMouse.price
         updated = {
           ...drawing,
           p1: { time: drag.startP1.time + dt, price: drag.startP1.price + dp },
           p2: drag.startP2 ? { time: drag.startP2.time + dt, price: drag.startP2.price + dp } : null,
+          p3: drag.startP3 ? { time: drag.startP3.time + dt, price: drag.startP3.price + dp } : null,
         }
       }
 
@@ -671,6 +782,7 @@ export default function DrawingCanvas({
         startMouse:   mp,
         startP1:      { ...hit.drawing.p1 },
         startP2:      hit.drawing.p2 ? { ...hit.drawing.p2 } : null,
+        startP3:      hit.drawing.p3 ? { ...hit.drawing.p3 } : null,
         latestDrawing: null,
       }
     } else {
@@ -710,26 +822,52 @@ export default function DrawingCanvas({
     const point = pxToPoint(px)
     if (!point) return
 
-    if (!TWO_POINT.has(curTool)) {
+    if (!TWO_POINT.has(curTool) && !THREE_POINT.has(curTool)) {
+      // Single-click tools
       onDrawingAdd({
         id:        crypto.randomUUID(),
         type:      curTool,
         p1:        point,
         p2:        null,
-        style:     { color: TOOL_COLOR[curTool], lineWidth: 1 },
+        style:     { color: TOOL_COLOR[curTool], lineWidth: 2 },
         fibLevels: fibRef.current ?? DEFAULT_FIB_LEVELS,
       })
       onToolChange?.('cursor')
+    } else if (THREE_POINT.has(curTool)) {
+      // 3-click: entry → TP → SL
+      if (!pendingRef.current) {
+        // Click 1: entry
+        pendingRef.current = { p1: point }
+        scheduleRender()
+      } else if (!pendingRef.current.p2) {
+        // Click 2: take profit
+        pendingRef.current = { ...pendingRef.current, p2: point }
+        scheduleRender()
+      } else {
+        // Click 3: stop loss — place drawing
+        onDrawingAdd({
+          id:    crypto.randomUUID(),
+          type:  curTool,
+          p1:    pendingRef.current.p1,
+          p2:    pendingRef.current.p2,
+          p3:    point,
+          style: { color: TOOL_COLOR[curTool], lineWidth: 2 },
+        })
+        pendingRef.current = null
+        onToolChange?.('cursor')
+      }
     } else if (!pendingRef.current) {
+      // Two-click tools: first click
       pendingRef.current = point
       scheduleRender()
     } else {
+      // Two-click tools: second click
       onDrawingAdd({
         id:        crypto.randomUUID(),
         type:      curTool,
         p1:        pendingRef.current,
         p2:        point,
-        style:     { color: TOOL_COLOR[curTool], lineWidth: 1 },
+        style:     { color: TOOL_COLOR[curTool], lineWidth: 2 },
         fibLevels: fibRef.current ?? DEFAULT_FIB_LEVELS,
       })
       pendingRef.current = null
