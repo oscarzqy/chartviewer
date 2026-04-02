@@ -10,6 +10,7 @@ import pytest
 # at import time — without this, they'd run against the production DB.
 _TEST_DB = os.path.join(tempfile.gettempdir(), "chartviewer_test_session.db")
 os.environ["CHARTVIEWER_DB_PATH"] = _TEST_DB
+os.environ["CHARTVIEWER_OHLC_DB_PATH"] = _TEST_DB  # single file for tests
 os.environ.setdefault("ADMIN_USER", "testadmin")
 os.environ.setdefault("ADMIN_PASSWORD", "testpass")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key")
@@ -20,7 +21,8 @@ def tmp_db():
     if os.path.exists(_TEST_DB):
         os.remove(_TEST_DB)
     import cache
-    cache.DB_PATH = _TEST_DB
+    cache.APP_DB_PATH = _TEST_DB
+    cache.OHLC_DB_PATH = _TEST_DB
     cache.init_db()
     import auth
     from main import DEFAULT_WATCHLIST

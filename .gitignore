@@ -3,7 +3,9 @@ backend/.venv/
 backend/__pycache__/
 backend/**/__pycache__/
 backend/*.pyc
-backend/ohlc_cache.db
+backend/*.db
+backend/*.db-shm
+backend/*.db-wal
 backend/.pytest_cache/
 
 # Node

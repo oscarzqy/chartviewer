@@ -1,45 +1,52 @@
-"""SQLite-backed OHLC cache and user data store."""
+"""SQLite-backed OHLC cache and user data store.
+
+Two DB files (configurable via env vars):
+  CHARTVIEWER_DB_PATH      — app data: users, watchlists, preferences, layouts
+  CHARTVIEWER_OHLC_DB_PATH — price data: ohlc bars, fetch_meta, tracked_tickers
+
+Both default to the same file (ohlc_cache.db) for backward-compatibility with
+single-file deployments. Set CHARTVIEWER_OHLC_DB_PATH to a different path to
+split them (recommended for cloud deployments with Litestream replication).
+"""
 
 import sqlite3
 import os
 from datetime import datetime, timezone
 
-DB_PATH = os.environ.get(
+APP_DB_PATH = os.environ.get(
     "CHARTVIEWER_DB_PATH",
     os.path.join(os.path.dirname(__file__), "ohlc_cache.db"),
 )
 
+OHLC_DB_PATH = os.environ.get(
+    "CHARTVIEWER_OHLC_DB_PATH",
+    APP_DB_PATH,  # same file by default — backward compat
+)
+
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(APP_DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def _connect_ohlc() -> sqlite3.Connection:
+    conn = sqlite3.connect(OHLC_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
 def init_db():
+    _init_app_db()
+    _init_ohlc_db()
+
+
+def _init_app_db():
     with _connect() as conn:
         conn.executescript("""
-            CREATE TABLE IF NOT EXISTS ohlc (
-                symbol   TEXT    NOT NULL,
-                interval TEXT    NOT NULL,
-                ts       INTEGER NOT NULL,
-                open     REAL    NOT NULL,
-                high     REAL    NOT NULL,
-                low      REAL    NOT NULL,
-                close    REAL    NOT NULL,
-                PRIMARY KEY (symbol, interval, ts)
-            );
-
-            CREATE TABLE IF NOT EXISTS fetch_meta (
-                symbol       TEXT    NOT NULL,
-                interval     TEXT    NOT NULL,
-                fetched_from INTEGER NOT NULL,
-                fetched_to   INTEGER NOT NULL,
-                last_updated INTEGER NOT NULL,
-                PRIMARY KEY (symbol, interval)
-            );
-
             CREATE TABLE IF NOT EXISTS users (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 username      TEXT    NOT NULL UNIQUE,
@@ -74,6 +81,38 @@ def init_db():
         """)
         _migrate_watchlist(conn)
         _migrate_preferences_v2(conn)
+        _migrate_watchlist_added_at(conn)
+
+
+def _init_ohlc_db():
+    with _connect_ohlc() as conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS ohlc (
+                symbol   TEXT    NOT NULL,
+                interval TEXT    NOT NULL,
+                ts       INTEGER NOT NULL,
+                open     REAL    NOT NULL,
+                high     REAL    NOT NULL,
+                low      REAL    NOT NULL,
+                close    REAL    NOT NULL,
+                PRIMARY KEY (symbol, interval, ts)
+            );
+
+            CREATE TABLE IF NOT EXISTS fetch_meta (
+                symbol       TEXT    NOT NULL,
+                interval     TEXT    NOT NULL,
+                fetched_from INTEGER NOT NULL,
+                fetched_to   INTEGER NOT NULL,
+                last_updated INTEGER NOT NULL,
+                PRIMARY KEY (symbol, interval)
+            );
+
+            CREATE TABLE IF NOT EXISTS tracked_tickers (
+                ticker        TEXT    PRIMARY KEY,
+                registered_at INTEGER NOT NULL,
+                last_backfill INTEGER
+            );
+        """)
 
 
 def _migrate_watchlist(conn: sqlite3.Connection):
@@ -99,6 +138,7 @@ def _migrate_watchlist(conn: sqlite3.Connection):
             position INTEGER NOT NULL,
             ticker   TEXT    NOT NULL,
             label    TEXT    NOT NULL,
+            added_at INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (user_id, ticker)
         )
     """)
@@ -117,10 +157,25 @@ def _migrate_watchlist(conn: sqlite3.Connection):
         )
 
 
+def _migrate_watchlist_added_at(conn: sqlite3.Connection):
+    """Add added_at column to watchlist if absent (existing per-user installs)."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(watchlist)").fetchall()}
+    if "added_at" not in cols:
+        # DEFAULT 0 = epoch, so existing tickers are immediately eligible for archiving
+        conn.execute("ALTER TABLE watchlist ADD COLUMN added_at INTEGER NOT NULL DEFAULT 0")
+
+
+def _migrate_preferences_v2(conn: sqlite3.Connection):
+    """Add active_layout_id column to preferences if absent."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(preferences)").fetchall()}
+    if "active_layout_id" not in cols:
+        conn.execute("ALTER TABLE preferences ADD COLUMN active_layout_id INTEGER")
+
+
 # ── OHLC ─────────────────────────────────────────────────────────────────────
 
 def get_cached_bars(symbol: str, interval: str, start_ts: int, end_ts: int) -> list[dict]:
-    with _connect() as conn:
+    with _connect_ohlc() as conn:
         rows = conn.execute(
             """
             SELECT ts, open, high, low, close
@@ -136,7 +191,7 @@ def get_cached_bars(symbol: str, interval: str, start_ts: int, end_ts: int) -> l
 def upsert_bars(symbol: str, interval: str, bars: list[dict]):
     if not bars:
         return
-    with _connect() as conn:
+    with _connect_ohlc() as conn:
         conn.executemany(
             """
             INSERT OR REPLACE INTO ohlc (symbol, interval, ts, open, high, low, close)
@@ -147,7 +202,7 @@ def upsert_bars(symbol: str, interval: str, bars: list[dict]):
 
 
 def get_fetch_meta(symbol: str, interval: str) -> dict | None:
-    with _connect() as conn:
+    with _connect_ohlc() as conn:
         row = conn.execute(
             "SELECT * FROM fetch_meta WHERE symbol = ? AND interval = ?",
             (symbol, interval),
@@ -157,7 +212,7 @@ def get_fetch_meta(symbol: str, interval: str) -> dict | None:
 
 def set_fetch_meta(symbol: str, interval: str, fetched_from: int, fetched_to: int):
     now = int(datetime.now(timezone.utc).timestamp())
-    with _connect() as conn:
+    with _connect_ohlc() as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO fetch_meta
@@ -176,6 +231,46 @@ def seconds_since_last_update(symbol: str, interval: str) -> float | None:
     return now - meta["last_updated"]
 
 
+# ── Tracked tickers ───────────────────────────────────────────────────────────
+
+def get_watchlist_tickers_older_than(threshold_ts: int) -> list[str]:
+    """Return distinct tickers from all users' watchlists added before threshold_ts."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ticker FROM watchlist WHERE added_at <= ?",
+            (threshold_ts,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def register_tracked_ticker(ticker: str) -> bool:
+    """Add ticker to tracked list. Returns True if newly registered."""
+    now = int(datetime.now(timezone.utc).timestamp())
+    with _connect_ohlc() as conn:
+        result = conn.execute(
+            "INSERT OR IGNORE INTO tracked_tickers (ticker, registered_at) VALUES (?, ?)",
+            (ticker, now),
+        )
+    return result.rowcount > 0
+
+
+def get_tracked_tickers() -> list[dict]:
+    with _connect_ohlc() as conn:
+        rows = conn.execute(
+            "SELECT ticker, registered_at, last_backfill FROM tracked_tickers ORDER BY ticker"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_tracked_ticker_backfill(ticker: str):
+    now = int(datetime.now(timezone.utc).timestamp())
+    with _connect_ohlc() as conn:
+        conn.execute(
+            "UPDATE tracked_tickers SET last_backfill = ? WHERE ticker = ?",
+            (now, ticker),
+        )
+
+
 # ── Watchlist ─────────────────────────────────────────────────────────────────
 
 def get_watchlist(user_id: int) -> list[dict]:
@@ -188,12 +283,22 @@ def get_watchlist(user_id: int) -> list[dict]:
 
 
 def save_watchlist(user_id: int, symbols: list[dict]):
-    """Replace the entire watchlist for a user."""
+    """Replace the entire watchlist for a user, preserving added_at for existing tickers."""
+    now = int(datetime.now(timezone.utc).timestamp())
     with _connect() as conn:
+        existing_added_at = {
+            r[0]: r[1]
+            for r in conn.execute(
+                "SELECT ticker, added_at FROM watchlist WHERE user_id = ?", (user_id,)
+            ).fetchall()
+        }
         conn.execute("DELETE FROM watchlist WHERE user_id = ?", (user_id,))
         conn.executemany(
-            "INSERT INTO watchlist (user_id, position, ticker, label) VALUES (?, ?, ?, ?)",
-            [(user_id, i, s["ticker"], s["label"]) for i, s in enumerate(symbols)],
+            "INSERT INTO watchlist (user_id, position, ticker, label, added_at) VALUES (?, ?, ?, ?, ?)",
+            [
+                (user_id, i, s["ticker"], s["label"], existing_added_at.get(s["ticker"], now))
+                for i, s in enumerate(symbols)
+            ],
         )
 
 
@@ -210,18 +315,11 @@ def migrate_watchlist_to_user(user_id: int) -> int:
         ).fetchall()
         if rows:
             conn.executemany(
-                "INSERT OR IGNORE INTO watchlist (user_id, position, ticker, label) VALUES (?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO watchlist (user_id, position, ticker, label, added_at) VALUES (?, ?, ?, ?, 0)",
                 [(user_id, r[0], r[1], r[2]) for r in rows],
             )
         conn.execute("DROP TABLE IF EXISTS watchlist_migration")
     return len(rows)
-
-
-def _migrate_preferences_v2(conn: sqlite3.Connection):
-    """Add active_layout_id column to preferences if absent."""
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(preferences)").fetchall()}
-    if "active_layout_id" not in cols:
-        conn.execute("ALTER TABLE preferences ADD COLUMN active_layout_id INTEGER")
 
 
 # ── Users ─────────────────────────────────────────────────────────────────────

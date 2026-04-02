@@ -1,19 +1,34 @@
 """ChartViewer FastAPI backend."""
 
+import asyncio
 import secrets
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Annotated
 
 import auth
 import cache
 import data
+import archiver
 import os
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="ChartViewer API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(archiver.run_archiver())
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+app = FastAPI(title="ChartViewer API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -236,6 +251,23 @@ def get_sources(user: CurrentUser):
         },
     ]
     return {"sources": sources}
+
+
+@app.get("/api/archiver/status")
+def archiver_status(user: CurrentUser):
+    """Return tracked tickers and their last backfill timestamps."""
+    tracked = cache.get_tracked_tickers()
+    return {
+        "total": len(tracked),
+        "tickers": [
+            {
+                "ticker": row["ticker"],
+                "registered_at": row["registered_at"],
+                "last_backfill": row["last_backfill"],
+            }
+            for row in tracked
+        ],
+    }
 
 
 @app.get("/health")
