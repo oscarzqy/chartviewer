@@ -480,9 +480,10 @@ export default function DrawingCanvas({
   onDrawingDelete,
   onToolChange,
 }) {
-  const canvasRef = useRef(null)
-  const dimRef    = useRef({ w: 0, h: 0 })
-  const rafRef    = useRef(null)
+  const canvasRef      = useRef(null)
+  const dimRef         = useRef({ w: 0, h: 0 })
+  const rafRef         = useRef(null)
+  const viewportSubRef = useRef(false)  // true once viewport subscription is active
 
   // All mutable state — no React state, so mouse movement never re-renders
   const drawingsRef  = useRef(drawings)
@@ -515,6 +516,14 @@ export default function DrawingCanvas({
   // scheduleRender never changes identity → viewport subscription registers once.
 
   const scheduleRender = useCallback(() => {
+    // Lazy viewport subscription: Chart's init effect runs after ours (parent after child),
+    // so chartRef.current is null at our effect time. Subscribe on first actual render call
+    // (triggered by ResizeObserver, which fires after all effects including Chart's init).
+    if (!viewportSubRef.current && chartRef.current) {
+      chartRef.current.timeScale().subscribeVisibleLogicalRangeChange(scheduleRender)
+      viewportSubRef.current = true
+    }
+
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
     rafRef.current = requestAnimationFrame(() => {
       const canvas = canvasRef.current
@@ -552,24 +561,6 @@ export default function DrawingCanvas({
               p2: { time: mTime, price: mPrice },
               fibLevels: fibRef.current ?? DEFAULT_FIB_LEVELS,
             }, coords, w, h, true)
-          } else if (THREE_POINT.has(curTool)) {
-            const pending = pendingRef.current
-            if (!pending.p2) {
-              // Showing entry → mouse as TP preview
-              renderDrawing(ctx, {
-                id: '_preview', type: curTool,
-                p1: pending.p1,
-                p2: { time: mTime, price: mPrice },
-              }, coords, w, h, true)
-            } else {
-              // Showing full preview with SL at mouse
-              renderDrawing(ctx, {
-                id: '_preview', type: curTool,
-                p1: pending.p1,
-                p2: pending.p2,
-                p3: { time: mTime, price: mPrice },
-              }, coords, w, h, true)
-            }
           }
         }
       }
@@ -579,12 +570,13 @@ export default function DrawingCanvas({
   // Re-render when drawings or tool prop changes
   useEffect(() => { scheduleRender() }, [drawings, tool, scheduleRender])
 
-  // Subscribe to chart viewport — stable subscription, never re-registers
+  // Cleanup viewport subscription on unmount
   useEffect(() => {
-    const chart = chartRef.current
-    if (!chart) return
-    chart.timeScale().subscribeVisibleLogicalRangeChange(scheduleRender)
-    return () => chart.timeScale().unsubscribeVisibleLogicalRangeChange(scheduleRender)
+    return () => {
+      if (viewportSubRef.current && chartRef.current) {
+        chartRef.current.timeScale().unsubscribeVisibleLogicalRangeChange(scheduleRender)
+      }
+    }
   }, [chartRef, scheduleRender])
 
   // Canvas sizing
@@ -695,14 +687,21 @@ export default function DrawingCanvas({
       } else if (drag.handle === 'p3') {
         updated = { ...drawing, p3: { time: mTime, price: mPrice } }
       } else {
-        // body — translate all points
-        const dt = mTime  - drag.startMouse.time
-        const dp = mPrice - drag.startMouse.price
+        // body — translate via pixel delta so result is always a valid bar time
+        // (arithmetic on bar timestamps breaks across weekend/holiday gaps)
+        const dPixelX = px.x - drag.startMousePx.x
+        const dPixelY = px.y - drag.startMousePx.y
+        const translatePx = (startPx, fallback) => {
+          if (!startPx) return fallback
+          const t = coords.fromX(startPx.x + dPixelX)
+          const p = coords.fromY(startPx.y + dPixelY)
+          return (t != null && p != null) ? { time: t, price: p } : fallback
+        }
         updated = {
           ...drawing,
-          p1: { time: drag.startP1.time + dt, price: drag.startP1.price + dp },
-          p2: drag.startP2 ? { time: drag.startP2.time + dt, price: drag.startP2.price + dp } : null,
-          p3: drag.startP3 ? { time: drag.startP3.time + dt, price: drag.startP3.price + dp } : null,
+          p1: translatePx(drag.startP1px, drawing.p1),
+          p2: drag.startP2px ? translatePx(drag.startP2px, drawing.p2) : null,
+          p3: drag.startP3px ? translatePx(drag.startP3px, drawing.p3) : null,
         }
       }
 
@@ -776,13 +775,20 @@ export default function DrawingCanvas({
         selectedRef.current = hit.drawing.id
         scheduleRender()
       }
+      const pxOf = (p) => p
+        ? { x: coords.toX(p.time) ?? px.x, y: coords.toY(p.price) ?? px.y }
+        : null
       dragRef.current = {
         id:           hit.drawing.id,
         handle:       hit.handle,
+        startMousePx: px,
         startMouse:   mp,
         startP1:      { ...hit.drawing.p1 },
+        startP1px:    pxOf(hit.drawing.p1),
         startP2:      hit.drawing.p2 ? { ...hit.drawing.p2 } : null,
+        startP2px:    pxOf(hit.drawing.p2),
         startP3:      hit.drawing.p3 ? { ...hit.drawing.p3 } : null,
+        startP3px:    pxOf(hit.drawing.p3),
         latestDrawing: null,
       }
     } else {
@@ -834,28 +840,34 @@ export default function DrawingCanvas({
       })
       onToolChange?.('cursor')
     } else if (THREE_POINT.has(curTool)) {
-      // 3-click: entry → TP → SL
-      if (!pendingRef.current) {
-        // Click 1: entry
-        pendingRef.current = { p1: point }
-        scheduleRender()
-      } else if (!pendingRef.current.p2) {
-        // Click 2: take profit
-        pendingRef.current = { ...pendingRef.current, p2: point }
-        scheduleRender()
-      } else {
-        // Click 3: stop loss — place drawing
-        onDrawingAdd({
-          id:    crypto.randomUUID(),
-          type:  curTool,
-          p1:    pendingRef.current.p1,
-          p2:    pendingRef.current.p2,
-          p3:    point,
-          style: { color: TOOL_COLOR[curTool], lineWidth: 2 },
-        })
-        pendingRef.current = null
-        onToolChange?.('cursor')
-      }
+      // Single click: place a default-sized position box, then user adjusts handles
+      const coords = getCoords()
+      if (!coords) return
+      const { w, h } = dimRef.current
+
+      // TP = 10% of visible price range, SL = 5% (half TP distance)
+      const priceTop    = coords.fromY(0)
+      const priceBottom = coords.fromY(h)
+      const priceRange  = (priceTop != null && priceBottom != null)
+        ? Math.abs(priceTop - priceBottom)
+        : Math.abs(point.price * 0.05)
+      const tpOffset = priceRange * 0.10
+      const slOffset = priceRange * 0.05
+
+      // Right edge of box: 20% of canvas width to the right
+      const p2Time = coords.fromX(Math.min(px.x + w * 0.20, w - 1)) ?? point.time
+
+      const isLong = curTool === 'long_position'
+      onDrawingAdd({
+        id:    crypto.randomUUID(),
+        type:  curTool,
+        p1:    point,
+        p2:    { time: p2Time, price: isLong ? point.price + tpOffset : point.price - tpOffset },
+        p3:    { time: point.time, price: isLong ? point.price - slOffset : point.price + slOffset },
+        style: { color: TOOL_COLOR[curTool], lineWidth: 2 },
+      })
+      pendingRef.current = null
+      onToolChange?.('cursor')
     } else if (!pendingRef.current) {
       // Two-click tools: first click
       pendingRef.current = point
@@ -873,7 +885,7 @@ export default function DrawingCanvas({
       pendingRef.current = null
       onToolChange?.('cursor')
     }
-  }, [pxToPoint, onDrawingAdd, onToolChange, scheduleRender])
+  }, [pxToPoint, getCoords, onDrawingAdd, onToolChange, scheduleRender])
 
   return (
     <canvas
