@@ -106,6 +106,20 @@ export async function fetchOHLC(symbol, interval, start, end) {
   return request(`${API}/ohlc?${params}`)
 }
 
+export async function fetchOHLCRange(symbol, interval) {
+  const params = new URLSearchParams({ symbol, interval })
+  return request(`${API}/ohlc/range?${params}`)
+}
+
+// Bar duration in seconds per interval — used for "today minus N bars" calculation
+export function barDurationSeconds(interval) {
+  const map = {
+    '5m': 300, '15m': 900, '1h': 3600, '4h': 14400,
+    '1d': 86400, '1wk': 604800, '1mo': 2592000, '1y': 31536000,
+  }
+  return map[interval] ?? 86400
+}
+
 // ── Watchlist ─────────────────────────────────────────────────────────────────
 
 export async function fetchWatchlist() {

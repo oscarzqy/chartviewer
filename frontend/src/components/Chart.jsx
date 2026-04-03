@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useMemo } from 'react'
 import { createChart, CrosshairMode } from 'lightweight-charts'
 import DrawingCanvas from './DrawingCanvas.jsx'
 
@@ -57,6 +57,11 @@ export default function Chart({
   onDrawingUpdate,
   onDrawingDelete,
   onToolChange,
+  // Replay props
+  replayBars,
+  replayIndex,
+  replayMode,
+  onCutConfirm,
 }) {
   const containerRef     = useRef(null)
   const chartRef         = useRef(null)
@@ -73,9 +78,28 @@ export default function Chart({
   // true = next bars load should center the chart; false = restore current viewport
   const centerPendingRef  = useRef(true)
 
+  // Replay refs — used imperatively inside event listeners
+  const replayModeRef  = useRef(replayMode)
+  const replayBarsRef  = useRef(replayBars)
+  const replayIndexRef = useRef(replayIndex)
+  const cutLineRef     = useRef(null)   // the cut line div element
+  const snappedIdxRef  = useRef(null)   // bar index currently snapped to in cut mode
+
   useEffect(() => { onScrolledToRef.current = onScrolledTo }, [onScrolledTo])
   useEffect(() => { targetDateRef.current = targetDate }, [targetDate])
   useEffect(() => { intervalRef.current = interval }, [interval])
+  const prevReplayModeRef = useRef('idle')
+  useEffect(() => {
+    // When transitioning out of replay, flag the next bars render to re-center.
+    // This effect is declared before the displayBars effect so it runs first.
+    if (prevReplayModeRef.current !== 'idle' && replayMode === 'idle') {
+      centerPendingRef.current = true
+    }
+    prevReplayModeRef.current = replayMode
+    replayModeRef.current = replayMode
+  }, [replayMode])
+  useEffect(() => { replayBarsRef.current = replayBars }, [replayBars])
+  useEffect(() => { replayIndexRef.current = replayIndex }, [replayIndex])
 
   // Stable helper: center chart on targetDate using current formattedRef data
   const centerViewport = useCallback((formatted) => {
@@ -124,7 +148,7 @@ export default function Chart({
     // Subscribe to scroll/zoom — debounced 300 ms to avoid spamming fetches
     let scrollTimer = null
     chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
-      if (suppressScrollRef.current || !range || !formattedRef.current.length) return
+      if (suppressScrollRef.current || replayModeRef.current !== 'idle' || !range || !formattedRef.current.length) return
       clearTimeout(scrollTimer)
       scrollTimer = setTimeout(() => {
         const centerTs = Math.round((range.from + range.to) / 2)
@@ -193,11 +217,20 @@ export default function Chart({
     })
   }, [drawingTool])
 
-  // Effect: update series data when bars change.
-  useEffect(() => {
-    if (!seriesRef.current || !bars || !chartRef.current) return
+  // Derive the bars to actually render: replay slice or normal bars.
+  // Memoized so the bars effect only fires when content changes, not on every render.
+  const displayBars = useMemo(
+    () => (replayBars !== null && replayIndex !== null)
+      ? replayBars.slice(0, replayIndex + 1)
+      : bars,
+    [replayBars, replayIndex, bars],
+  )
 
-    const formatted = bars.map((b) => ({
+  // Effect: update series data when displayBars change.
+  useEffect(() => {
+    if (!seriesRef.current || !displayBars || !chartRef.current) return
+
+    const formatted = displayBars.map((b) => ({
       time: b.ts,
       open: b.open,
       high: b.high,
@@ -226,12 +259,30 @@ export default function Chart({
     if (wasEmpty || centerPendingRef.current) {
       centerPendingRef.current = false
       centerViewport(formatted)
+    } else if (replayModeRef.current !== 'idle') {
+      // During replay: keep the last visible bar at ~80% of the window so new bars
+      // appear on the right edge as they reveal, without resetting the viewport.
+      const visibleRange = chartRef.current.timeScale().getVisibleRange()
+      if (visibleRange) {
+        const lastBar = formatted[formatted.length - 1]
+        if (lastBar.time > visibleRange.to) {
+          // New bar is off-screen — shift the window forward by one bar width
+          const windowWidth = visibleRange.to - visibleRange.from
+          suppressScrollRef.current = true
+          chartRef.current.timeScale().setVisibleRange({
+            from: lastBar.time - windowWidth,
+            to:   lastBar.time,
+          })
+          suppressScrollRef.current = false
+        }
+        // If bar is already in view, do nothing — let user scroll freely
+      }
     } else if (savedRange) {
       suppressScrollRef.current = true
       chartRef.current.timeScale().setVisibleRange(savedRange)
       suppressScrollRef.current = false
     }
-  }, [bars, centerViewport])
+  }, [displayBars, centerViewport]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Effect: when targetDate or interval changes explicitly (user pick / ticker switch),
   // mark that the next bars load should re-center.
@@ -242,16 +293,88 @@ export default function Chart({
     }
   }, [targetDate, interval, centerViewport])
 
+
+  // Effect: cut line — mousemove snaps a vertical line to the nearest bar,
+  // click confirms the cut. Active only when replayMode === 'cut'.
+  useEffect(() => {
+    if (replayMode !== 'cut') return
+    const container = containerRef.current
+    if (!container) return
+
+    const onMove = (e) => {
+      const chart = chartRef.current
+      if (!chart || !cutLineRef.current) return
+      const rect = container.getBoundingClientRect()
+      const x = e.clientX - rect.left
+
+      // Find the pool of bars to snap to: limited to already-visible bars during re-cut
+      const pool = replayIndexRef.current !== null
+        ? replayBarsRef.current.slice(0, replayIndexRef.current)  // backwards-only re-cut
+        : replayBarsRef.current  // initial cut: full range
+
+      if (!pool || pool.length === 0) return
+
+      // Get the timestamp at this x coordinate
+      const ts = chart.timeScale().coordinateToTime(x)
+      if (ts == null) return
+
+      // Snap to nearest bar in pool
+      let best = 0, minDiff = Infinity
+      for (let i = 0; i < pool.length; i++) {
+        const d = Math.abs(pool[i].ts - ts)
+        if (d < minDiff) { minDiff = d; best = i }
+      }
+      snappedIdxRef.current = best
+
+      // Convert snapped bar time back to pixel x
+      const snappedX = chart.timeScale().timeToCoordinate(pool[best].ts)
+      if (snappedX == null) return
+      cutLineRef.current.style.left = `${snappedX}px`
+      cutLineRef.current.style.display = 'block'
+    }
+
+    const onClick = () => {
+      if (snappedIdxRef.current !== null) {
+        onCutConfirm(snappedIdxRef.current)
+      }
+    }
+
+    container.addEventListener('mousemove', onMove)
+    container.addEventListener('click', onClick)
+    return () => {
+      container.removeEventListener('mousemove', onMove)
+      container.removeEventListener('click', onClick)
+      snappedIdxRef.current = null
+      if (cutLineRef.current) cutLineRef.current.style.display = 'none'
+    }
+  }, [replayMode, onCutConfirm])
+
   return (
     <div
       ref={wrapperRef}
-      style={{ position: 'relative', width: '100%', height: '100%' }}
-      onMouseMove={(e) => drawingCanvasRef.current?.handleMouseMove(e)}
-      onMouseLeave={(e) => drawingCanvasRef.current?.handleMouseLeave(e)}
-      onMouseDown={(e) => drawingCanvasRef.current?.handleMouseDown(e)}
-      onClick={(e) => drawingCanvasRef.current?.handleClick(e)}
+      style={{ position: 'relative', width: '100%', height: '100%', cursor: replayMode === 'cut' ? 'crosshair' : undefined }}
+      onMouseMove={(e) => { if (replayMode !== 'cut') drawingCanvasRef.current?.handleMouseMove(e) }}
+      onMouseLeave={(e) => { if (replayMode !== 'cut') drawingCanvasRef.current?.handleMouseLeave(e) }}
+      onMouseDown={(e) => { if (replayMode !== 'cut') drawingCanvasRef.current?.handleMouseDown(e) }}
+      onClick={(e) => { if (replayMode !== 'cut') drawingCanvasRef.current?.handleClick(e) }}
     >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+
+      {/* Cut line — shown in cut mode, positioned imperatively via cutLineRef */}
+      <div
+        ref={cutLineRef}
+        style={{
+          display:          'none',
+          position:         'absolute',
+          top:              0,
+          bottom:           0,
+          width:            1,
+          background:       '#f0b429',
+          opacity:          0.85,
+          pointerEvents:    'none',
+          zIndex:           25,
+        }}
+      />
 
       {/* Drawing canvas — pointer-events:none so chart canvas gets events natively */}
       <DrawingCanvas
@@ -285,7 +408,7 @@ export default function Chart({
       {!loading && errorMessage && (
         <div style={errorOverlayStyle}>{errorMessage}</div>
       )}
-      {!loading && !errorMessage && bars && bars.length === 0 && (
+      {!loading && !errorMessage && replayMode === 'idle' && bars && bars.length === 0 && (
         <div style={loadingOverlayStyle}>No data available for this range</div>
       )}
     </div>

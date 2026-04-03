@@ -169,6 +169,21 @@ def get_ohlc(
     return {"symbol": sym, "interval": interval, "bars": bars}
 
 
+@app.get("/api/ohlc/range")
+def get_ohlc_range(
+    _user: CurrentUser,
+    symbol: str = Query(...),
+    interval: str = Query(...),
+):
+    """Return the earliest and latest cached timestamps for a symbol+interval."""
+    if interval not in VALID_INTERVALS:
+        raise HTTPException(400, f"Invalid interval. Choose from: {sorted(VALID_INTERVALS)}")
+    meta = cache.get_fetch_meta(symbol.upper(), interval)
+    if not meta:
+        raise HTTPException(404, "No cached data for this symbol/interval")
+    return {"earliest_ts": meta["fetched_from"], "latest_ts": meta["fetched_to"]}
+
+
 @app.get("/api/watchlist")
 def get_watchlist(user: CurrentUser):
     return {"symbols": cache.get_watchlist(user["id"])}

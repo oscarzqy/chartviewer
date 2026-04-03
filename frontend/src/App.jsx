@@ -10,6 +10,8 @@ import LayoutManager from './components/LayoutManager.jsx'
 import { DEFAULT_FIB_LEVELS } from './components/DrawingCanvas.jsx'
 import {
   fetchOHLC,
+  fetchOHLCRange,
+  barDurationSeconds,
   fetchWatchlist,
   saveWatchlist,
   fetchPreferences,
@@ -21,6 +23,7 @@ import {
   updateLayout,
   deleteLayout,
 } from './api.js'
+import ReplayControls from './components/ReplayControls.jsx'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
@@ -42,6 +45,21 @@ export default function App() {
   const [loading, setLoading]         = useState(false)
   const [toast, setToast]             = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+
+  // ── Replay state ───────────────────────────────────────────────────────────
+  const [replayMode,  setReplayMode]  = useState('idle')  // 'idle'|'cut'|'playing'|'paused'
+  const [replayBars,  setReplayBars]  = useState(null)
+  const [replayIndex, setReplayIndex] = useState(null)
+  const [replaySpeed, setReplaySpeed] = useState(1)
+  const replayTimerRef  = useRef(null)
+  const replayBarsRef   = useRef(null)
+  const replayIndexRef  = useRef(null)
+
+  useEffect(() => { replayBarsRef.current  = replayBars  }, [replayBars])
+  useEffect(() => { replayIndexRef.current = replayIndex }, [replayIndex])
+
+  // Clean up timer on unmount
+  useEffect(() => () => window.clearInterval(replayTimerRef.current), [])
 
   // ── Drawing state ──────────────────────────────────────────────────────────
   const [drawingTool, setDrawingTool] = useState('cursor')
@@ -147,6 +165,7 @@ export default function App() {
 
   // ── Ticker / interval / date handlers ─────────────────────────────────────
   const handleSelect = (ticker) => {
+    if (replayMode !== 'idle') handleExitReplay()
     setActiveTicker(ticker)
     setBars([])
     setChartCenter(date)
@@ -154,6 +173,7 @@ export default function App() {
   }
 
   const handleIntervalChange = (v) => {
+    if (replayMode !== 'idle') handleExitReplay()
     setInterval(v)
     setBars([])
     setChartCenter(date)
@@ -169,6 +189,102 @@ export default function App() {
   const handleScrolledTo = useCallback((newCenter) => {
     setDate(newCenter)
   }, [])
+
+  // ── Replay handlers ────────────────────────────────────────────────────────
+  const handleExitReplay = useCallback(() => {
+    window.clearInterval(replayTimerRef.current)
+    setReplayMode('idle')
+    setReplayBars(null)
+    setReplayIndex(null)
+  }, [])
+
+  const handleReplayClick = useCallback(async () => {
+    if (replayMode !== 'idle') { handleExitReplay(); return }
+    if (!activeTicker) return
+    setLoading(true)
+    setChartError(null)
+    try {
+      const [start, end] = windowForInterval(interval, today())
+      const result = await fetchOHLC(activeTicker, interval, start, end)
+      setReplayBars(result.bars)
+      setReplayMode('cut')
+    } catch (e) {
+      if (e.status === 401) handleSessionExpired()
+      else { setToast(e.message); setChartError(e.message) }
+    } finally {
+      setLoading(false)
+    }
+  }, [replayMode, activeTicker, interval, handleExitReplay]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleCutConfirm = useCallback((index) => {
+    const maxIdx = replayIndexRef.current !== null ? replayIndexRef.current - 1 : Infinity
+    const clamped = Math.min(index, maxIdx)
+    if (clamped < 0) return
+    setReplayIndex(clamped)
+    setReplayMode('paused')
+  }, [])
+
+  const handleStep = useCallback(() => {
+    setReplayIndex((prev) => {
+      if (prev === null || !replayBarsRef.current) return prev
+      const next = Math.min(prev + 1, replayBarsRef.current.length - 1)
+      replayIndexRef.current = next
+      return next
+    })
+  }, [])
+
+  const handlePlayPause = useCallback(() => {
+    // Just toggle the mode — the useEffect below owns the interval lifecycle
+    setReplayMode((mode) => (mode === 'playing' ? 'paused' : 'playing'))
+  }, [])
+
+  // Single source of truth for the play interval.
+  // Must use window.setInterval — plain `setInterval` is shadowed by the
+  // `interval` state setter (`const [interval, setInterval] = useState(...)`).
+  useEffect(() => {
+    if (replayMode !== 'playing') {
+      window.clearInterval(replayTimerRef.current)
+      return
+    }
+    replayTimerRef.current = window.setInterval(() => {
+      setReplayIndex((prev) => {
+        if (prev === null || !replayBarsRef.current) return prev
+        if (prev >= replayBarsRef.current.length - 1) {
+          setReplayMode('paused')
+          return prev
+        }
+        return prev + 1
+      })
+    }, 1000 / replaySpeed)
+    return () => window.clearInterval(replayTimerRef.current)
+  }, [replayMode, replaySpeed])
+
+  const handleSpeedChange = useCallback((speed) => {
+    setReplaySpeed(speed)
+  }, [])
+
+  const handleRandomDate = useCallback(async () => {
+    if (!replayBarsRef.current || replayBarsRef.current.length === 0) return
+    try {
+      const { earliest_ts, latest_ts } = await fetchOHLCRange(activeTicker, interval)
+      const barDur = barDurationSeconds(interval)
+      const latestAllowed = latest_ts - 30 * barDur
+      if (earliest_ts >= latestAllowed) {
+        setToast('Not enough cached data for a random date')
+        return
+      }
+      const randomTs = earliest_ts + Math.random() * (latestAllowed - earliest_ts)
+      const pool = replayBarsRef.current
+      let best = 0, minDiff = Infinity
+      for (let i = 0; i < pool.length; i++) {
+        const d = Math.abs(pool[i].ts - randomTs)
+        if (d < minDiff) { minDiff = d; best = i }
+      }
+      handleCutConfirm(best)
+    } catch (e) {
+      setToast(e.message)
+    }
+  }, [activeTicker, interval, handleCutConfirm])
 
   // ── Watchlist handlers ─────────────────────────────────────────────────────
   const handleAdd = ({ ticker, label }) => {
@@ -321,6 +437,8 @@ export default function App() {
             onIntervalChange={handleIntervalChange}
             date={date}
             onDateChange={handleDateChange}
+            onReplayClick={handleReplayClick}
+            replayMode={replayMode}
           />
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px' }}>
             <LayoutManager
@@ -339,7 +457,7 @@ export default function App() {
         </div>
 
         {/* Chart */}
-        <div style={chartWrapStyle}>
+        <div style={{ ...chartWrapStyle, position: 'relative' }}>
           <Chart
             bars={bars}
             interval={interval}
@@ -347,14 +465,35 @@ export default function App() {
             onScrolledTo={handleScrolledTo}
             loading={loading}
             errorMessage={chartError}
-            drawingTool={drawingTool}
+            drawingTool={replayMode !== 'idle' ? 'cursor' : drawingTool}
             drawings={drawings}
             fibLevels={fibLevels}
             onDrawingAdd={handleDrawingAdd}
             onDrawingUpdate={handleDrawingUpdate}
             onDrawingDelete={handleDrawingDelete}
             onToolChange={setDrawingTool}
+            replayBars={replayBars}
+            replayIndex={replayIndex}
+            replayMode={replayMode}
+            onCutConfirm={handleCutConfirm}
           />
+          {replayMode !== 'idle' && (
+            <ReplayControls
+              replayMode={replayMode}
+              replaySpeed={replaySpeed}
+              currentBarDate={
+                replayBars && replayIndex !== null
+                  ? new Date(replayBars[replayIndex].ts * 1000).toISOString().slice(0, 16).replace('T', ' ')
+                  : ''
+              }
+              onExit={handleExitReplay}
+              onCut={() => setReplayMode('cut')}
+              onStep={handleStep}
+              onPlayPause={handlePlayPause}
+              onSpeedChange={handleSpeedChange}
+              onRandomDate={handleRandomDate}
+            />
+          )}
         </div>
       </div>
 

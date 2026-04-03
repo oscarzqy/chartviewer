@@ -1,6 +1,6 @@
 const INTERVALS = ['5m', '15m', '1h', '4h', '1d', '1wk', '1mo', '1y']
 
-export default function Toolbar({ interval, onIntervalChange, date, onDateChange }) {
+export default function Toolbar({ interval, onIntervalChange, date, onDateChange, onReplayClick, replayMode }) {
   return (
     <div style={toolbarStyle}>
       {/* Interval buttons */}
@@ -25,6 +25,17 @@ export default function Toolbar({ interval, onIntervalChange, date, onDateChange
           onChange={(e) => onDateChange(e.target.value)}
           style={dateInputStyle}
         />
+      </div>
+
+      {/* Replay */}
+      <div style={groupStyle}>
+        <button
+          onClick={onReplayClick}
+          style={btnStyle(replayMode !== 'idle')}
+          title="Replay mode"
+        >
+          ▶ Replay
+        </button>
       </div>
     </div>
   )
