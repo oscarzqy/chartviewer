@@ -154,6 +154,35 @@ export default function Chart({
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // Scroll wheel on Y-axis — zoom the price scale
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    const onWheel = (e) => {
+      const chart = chartRef.current
+      if (!chart) return
+      const rect = container.getBoundingClientRect()
+      const x = e.clientX - rect.left
+      const priceScaleWidth = chart.priceScale('right').width()
+      if (x < rect.width - priceScaleWidth) return  // not over price scale
+      e.preventDefault()
+      e.stopPropagation()
+      const margins = chart.priceScale('right').options().scaleMargins ?? { top: 0.1, bottom: 0.1 }
+      const delta = e.deltaY > 0 ? 0.03 : -0.03  // down = zoom out, up = zoom in
+      chart.applyOptions({
+        rightPriceScale: {
+          autoScale: false,
+          scaleMargins: {
+            top:    Math.max(0.01, Math.min(0.48, margins.top    + delta)),
+            bottom: Math.max(0.01, Math.min(0.48, margins.bottom + delta)),
+          },
+        },
+      })
+    }
+    container.addEventListener('wheel', onWheel, { passive: false, capture: true })
+    return () => container.removeEventListener('wheel', onWheel, { capture: true })
+  }, [])
+
   // Disable chart mouse scroll when a drawing tool is active (not cursor)
   useEffect(() => {
     if (!chartRef.current) return
