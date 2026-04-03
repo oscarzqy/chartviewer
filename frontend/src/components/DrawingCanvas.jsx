@@ -6,11 +6,14 @@
  *    lives in refs so mouse movement never triggers React re-renders → no flash.
  *  - scheduleRender is created once (stable identity) so the chart viewport
  *    subscription never re-registers.
- *  - In cursor mode, pointer-events stay 'auto'. A miss on mousedown temporarily
- *    sets pointer-events:'none' so the chart's own canvas receives the event for
- *    native panning, then restores on document mouseup.
+ *  - The canvas has pointer-events:none so the chart's own canvas always receives
+ *    mouse events natively (crosshair + axis labels always visible). The parent
+ *    wrapper div in Chart.jsx captures events (they bubble up from the LWC canvas)
+ *    and calls the handlers exposed via forwardRef/useImperativeHandle.
+ *  - While dragging a drawing, LWC pressedMouseMove panning is temporarily disabled
+ *    so the chart doesn't pan during the drag.
  */
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react'
 
 export const DEFAULT_FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]
 
@@ -469,7 +472,7 @@ function renderDrawing(ctx, drawing, coords, W, H, preview = false) {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function DrawingCanvas({
+const DrawingCanvas = forwardRef(function DrawingCanvas({
   chartRef,
   seriesRef,
   tool,
@@ -479,7 +482,8 @@ export default function DrawingCanvas({
   onDrawingUpdate,
   onDrawingDelete,
   onToolChange,
-}) {
+  wrapperRef,
+}, ref) {
   const canvasRef      = useRef(null)
   const dimRef         = useRef({ w: 0, h: 0 })
   const rafRef         = useRef(null)
@@ -494,7 +498,6 @@ export default function DrawingCanvas({
   const hoveredRef   = useRef(null)      // { id, handle } | null
   const selectedRef  = useRef(null)      // id of selected drawing
   const dragRef      = useRef(null)      // active drag state
-  const panningRef   = useRef(false)     // true while passing events through to chart
 
   // Sync props → refs
   useEffect(() => { drawingsRef.current = drawings }, [drawings])
@@ -548,6 +551,7 @@ export default function DrawingCanvas({
         renderDrawing(ctx, d, coords, w, h, false)
         if (isSelected || isActive) renderHandles(ctx, d, coords)
       }
+
 
       // Preview while placing
       if (pendingRef.current && mp) {
@@ -624,7 +628,7 @@ export default function DrawingCanvas({
     return () => window.removeEventListener('keydown', onKey)
   }, [scheduleRender, onDrawingDelete])
 
-  // Document mouseup — commits drag and restores chart panning
+  // Document mouseup — commits drag and re-enables chart panning
   useEffect(() => {
     const onUp = () => {
       if (dragRef.current) {
@@ -633,16 +637,17 @@ export default function DrawingCanvas({
         if (drag.latestDrawing) {
           onDrawingUpdate?.(drag.latestDrawing)
         }
+        // Re-enable chart panning now that the drawing drag is done
+        chartRef.current?.applyOptions({
+          handleScroll: { pressedMouseMove: true },
+          handleScale:  { axisPressedMouseMove: true },
+        })
         scheduleRender()
-      }
-      if (panningRef.current) {
-        panningRef.current = false
-        if (canvasRef.current) canvasRef.current.style.pointerEvents = 'auto'
       }
     }
     document.addEventListener('mouseup', onUp)
     return () => document.removeEventListener('mouseup', onUp)
-  }, [onDrawingUpdate, scheduleRender])
+  }, [onDrawingUpdate, scheduleRender, chartRef])
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -726,14 +731,14 @@ export default function DrawingCanvas({
       const prev = hoveredRef.current
       if (found?.id !== prev?.id || found?.handle !== prev?.handle) {
         hoveredRef.current = found
-        // Update cursor directly on DOM (no React re-render needed)
-        if (canvasRef.current) {
-          canvasRef.current.style.cursor = found
+        // Update cursor on wrapper div directly (no React re-render needed)
+        if (wrapperRef?.current) {
+          wrapperRef.current.style.cursor = found
             ? (found.handle === 'body' ? 'move' : 'crosshair')
             : 'default'
         }
-        scheduleRender()
       }
+      scheduleRender()
     } else if (TWO_POINT.has(curTool) && pendingRef.current) {
       scheduleRender()
     }
@@ -791,33 +796,19 @@ export default function DrawingCanvas({
         startP3px:    pxOf(hit.drawing.p3),
         latestDrawing: null,
       }
+      // Disable chart panning while dragging a drawing
+      chartRef.current?.applyOptions({
+        handleScroll: { pressedMouseMove: false },
+        handleScale:  { axisPressedMouseMove: false },
+      })
     } else {
-      // Click on empty space — deselect
+      // Click on empty space — deselect; chart gets mousedown natively for panning
       if (selectedRef.current) {
         selectedRef.current = null
         scheduleRender()
       }
-      // Miss — pass this mousedown through to the chart for native panning
-      panningRef.current = true
-      const canvas = canvasRef.current
-      canvas.style.pointerEvents = 'none'
-      const el = document.elementFromPoint(e.clientX, e.clientY)
-      canvas.style.pointerEvents = 'auto'
-      if (el) {
-        el.dispatchEvent(new MouseEvent('mousedown', {
-          bubbles: true, cancelable: true, view: window,
-          clientX: e.clientX, clientY: e.clientY,
-          screenX: e.screenX, screenY: e.screenY,
-          button: e.button, buttons: e.buttons,
-          ctrlKey: e.ctrlKey, shiftKey: e.shiftKey,
-          altKey: e.altKey, metaKey: e.metaKey,
-        }))
-      }
-      // Subsequent mousemove/up go directly to chart while panning
-      canvas.style.pointerEvents = 'none'
-      // Restored by document mouseup handler
     }
-  }, [getCoords, pxToPoint])
+  }, [getCoords, pxToPoint, chartRef])
 
   const handleClick = useCallback((e) => {
     // Cursor clicks handled by mousedown/drag; drawing placement clicks here
@@ -887,21 +878,33 @@ export default function DrawingCanvas({
     }
   }, [pxToPoint, getCoords, onDrawingAdd, onToolChange, scheduleRender])
 
+  // Expose handlers to parent wrapper div (Chart.jsx)
+  useImperativeHandle(ref, () => ({
+    handleMouseMove,
+    handleMouseLeave,
+    handleMouseDown,
+    handleClick,
+  }), [handleMouseMove, handleMouseLeave, handleMouseDown, handleClick])
+
+  // Sync cursor style on wrapper when tool changes
+  useEffect(() => {
+    if (wrapperRef?.current) {
+      wrapperRef.current.style.cursor = tool === 'cursor' ? 'default' : 'crosshair'
+    }
+  }, [tool, wrapperRef])
+
   return (
     <canvas
       ref={canvasRef}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
-      onMouseDown={handleMouseDown}
-      onClick={handleClick}
       style={{
         position:      'absolute',
         top:           0,
         left:          0,
-        pointerEvents: 'auto',
-        cursor:        tool === 'cursor' ? 'default' : 'crosshair',
+        pointerEvents: 'none',
         zIndex:        10,
       }}
     />
   )
-}
+})
+
+export default DrawingCanvas

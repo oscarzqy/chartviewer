@@ -58,9 +58,11 @@ export default function Chart({
   onDrawingDelete,
   onToolChange,
 }) {
-  const containerRef = useRef(null)
-  const chartRef     = useRef(null)
-  const seriesRef    = useRef(null)
+  const containerRef     = useRef(null)
+  const chartRef         = useRef(null)
+  const seriesRef        = useRef(null)
+  const wrapperRef       = useRef(null)
+  const drawingCanvasRef = useRef(null)
 
   // Refs to avoid stale closures in stable callbacks
   const formattedRef      = useRef([])
@@ -200,13 +202,22 @@ export default function Chart({
   }, [targetDate, interval, centerViewport])
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+    <div
+      ref={wrapperRef}
+      style={{ position: 'relative', width: '100%', height: '100%' }}
+      onMouseMove={(e) => drawingCanvasRef.current?.handleMouseMove(e)}
+      onMouseLeave={(e) => drawingCanvasRef.current?.handleMouseLeave(e)}
+      onMouseDown={(e) => drawingCanvasRef.current?.handleMouseDown(e)}
+      onClick={(e) => drawingCanvasRef.current?.handleClick(e)}
+    >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
-      {/* Drawing canvas — sits above the chart */}
+      {/* Drawing canvas — pointer-events:none so chart canvas gets events natively */}
       <DrawingCanvas
+        ref={drawingCanvasRef}
         chartRef={chartRef}
         seriesRef={seriesRef}
+        wrapperRef={wrapperRef}
         tool={drawingTool ?? 'cursor'}
         drawings={drawings ?? []}
         fibLevels={fibLevels}
