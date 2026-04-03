@@ -358,7 +358,15 @@ export default function Chart({
       onMouseDown={(e) => { if (replayMode !== 'cut') drawingCanvasRef.current?.handleMouseDown(e) }}
       onClick={(e) => { if (replayMode !== 'cut') drawingCanvasRef.current?.handleClick(e) }}
     >
-      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      <div
+        ref={containerRef}
+        style={{
+          width: '100%',
+          height: '100%',
+          boxSizing: 'border-box',
+          paddingBottom: replayMode !== 'idle' ? 36 : 0,
+        }}
+      />
 
       {/* Cut line — shown in cut mode, positioned imperatively via cutLineRef */}
       <div
