@@ -82,8 +82,9 @@ export default function Chart({
   const replayModeRef  = useRef(replayMode)
   const replayBarsRef  = useRef(replayBars)
   const replayIndexRef = useRef(replayIndex)
-  const cutLineRef     = useRef(null)   // the cut line div element
-  const snappedIdxRef  = useRef(null)   // bar index currently snapped to in cut mode
+  const barsRef        = useRef(bars)    // normal bars — fallback pool for initial cut
+  const cutLineRef     = useRef(null)    // the cut line div element
+  const snappedTsRef   = useRef(null)    // timestamp of the bar currently snapped to
 
   useEffect(() => { onScrolledToRef.current = onScrolledTo }, [onScrolledTo])
   useEffect(() => { targetDateRef.current = targetDate }, [targetDate])
@@ -99,6 +100,7 @@ export default function Chart({
     replayModeRef.current = replayMode
   }, [replayMode])
   useEffect(() => { replayBarsRef.current = replayBars }, [replayBars])
+  useEffect(() => { barsRef.current = bars }, [bars])
   useEffect(() => { replayIndexRef.current = replayIndex }, [replayIndex])
 
   // Stable helper: center chart on targetDate using current formattedRef data
@@ -307,11 +309,15 @@ export default function Chart({
       const rect = container.getBoundingClientRect()
       const x = e.clientX - rect.left
 
-      // Find the pool of bars to snap to: limited to already-visible bars during re-cut
-      const pool = replayIndexRef.current !== null
-        ? replayBarsRef.current.slice(0, replayIndexRef.current)  // backwards-only re-cut
-        : replayBarsRef.current  // initial cut: full range
-
+      // Pool: during re-cut use only the already-revealed replay bars (backwards-only);
+      // during initial cut (replayBars not yet loaded) fall back to the normal bars.
+      let pool
+      if (replayBarsRef.current) {
+        const limit = replayIndexRef.current ?? replayBarsRef.current.length
+        pool = replayBarsRef.current.slice(0, limit)
+      } else {
+        pool = barsRef.current  // initial cut: snap to existing chart bars
+      }
       if (!pool || pool.length === 0) return
 
       // Get the timestamp at this x coordinate
@@ -324,7 +330,7 @@ export default function Chart({
         const d = Math.abs(pool[i].ts - ts)
         if (d < minDiff) { minDiff = d; best = i }
       }
-      snappedIdxRef.current = best
+      snappedTsRef.current = pool[best].ts
 
       // Convert snapped bar time back to pixel x
       const snappedX = chart.timeScale().timeToCoordinate(pool[best].ts)
@@ -334,8 +340,8 @@ export default function Chart({
     }
 
     const onClick = () => {
-      if (snappedIdxRef.current !== null) {
-        onCutConfirm(snappedIdxRef.current)
+      if (snappedTsRef.current !== null) {
+        onCutConfirm(snappedTsRef.current)  // pass timestamp, not index
       }
     }
 
@@ -344,7 +350,7 @@ export default function Chart({
     return () => {
       container.removeEventListener('mousemove', onMove)
       container.removeEventListener('click', onClick)
-      snappedIdxRef.current = null
+      snappedTsRef.current = null
       if (cutLineRef.current) cutLineRef.current.style.display = 'none'
     }
   }, [replayMode, onCutConfirm])

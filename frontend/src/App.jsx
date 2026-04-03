@@ -198,31 +198,57 @@ export default function App() {
     setReplayIndex(null)
   }, [])
 
-  const handleReplayClick = useCallback(async () => {
+  const handleReplayClick = useCallback(() => {
     if (replayMode !== 'idle') { handleExitReplay(); return }
     if (!activeTicker) return
+    // Enter cut mode immediately — no fetch yet. The cut line snaps to the
+    // already-loaded normal bars. The fetch happens only after the user confirms
+    // a cut point, scoped to (cut_date - window, today).
+    setReplayMode('cut')
+  }, [replayMode, activeTicker, handleExitReplay])
+
+  const handleCutConfirm = useCallback(async (cutTs) => {
+    const existing = replayBarsRef.current
+    const inRange = existing &&
+      cutTs >= existing[0].ts &&
+      cutTs <= existing[existing.length - 1].ts
+
+    if (inRange) {
+      // Re-cut within already-loaded replay bars: just reposition backwards
+      const limit = replayIndexRef.current ?? existing.length
+      let best = 0, minDiff = Infinity
+      for (let i = 0; i < limit; i++) {
+        const d = Math.abs(existing[i].ts - cutTs)
+        if (d < minDiff) { minDiff = d; best = i }
+      }
+      setReplayIndex(best)
+      setReplayMode('paused')
+      return
+    }
+
+    // Initial cut or cut outside current replay range: fetch (cut_date - window, today)
     setLoading(true)
-    setChartError(null)
     try {
-      const [start, end] = windowForInterval(interval, today())
+      const cutDate = new Date(cutTs * 1000).toISOString().slice(0, 10)
+      // windowForInterval gives [cutDate - N_days, today+1] — exactly the scoped range
+      const [start, end] = windowForInterval(interval, cutDate)
       const result = await fetchOHLC(activeTicker, interval, start, end)
-      setReplayBars(result.bars)
-      setReplayMode('cut')
+      const loaded = result.bars
+      let best = 0, minDiff = Infinity
+      for (let i = 0; i < loaded.length; i++) {
+        const d = Math.abs(loaded[i].ts - cutTs)
+        if (d < minDiff) { minDiff = d; best = i }
+      }
+      setReplayBars(loaded)
+      setReplayIndex(best)
+      setReplayMode('paused')
     } catch (e) {
       if (e.status === 401) handleSessionExpired()
-      else { setToast(e.message); setChartError(e.message) }
+      else setToast(e.message)
     } finally {
       setLoading(false)
     }
-  }, [replayMode, activeTicker, interval, handleExitReplay]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const handleCutConfirm = useCallback((index) => {
-    const maxIdx = replayIndexRef.current !== null ? replayIndexRef.current - 1 : Infinity
-    const clamped = Math.min(index, maxIdx)
-    if (clamped < 0) return
-    setReplayIndex(clamped)
-    setReplayMode('paused')
-  }, [])
+  }, [activeTicker, interval]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleStep = useCallback(() => {
     setReplayIndex((prev) => {
@@ -264,7 +290,6 @@ export default function App() {
   }, [])
 
   const handleRandomDate = useCallback(async () => {
-    if (!replayBarsRef.current || replayBarsRef.current.length === 0) return
     try {
       const { earliest_ts, latest_ts } = await fetchOHLCRange(activeTicker, interval)
       const barDur = barDurationSeconds(interval)
@@ -273,14 +298,9 @@ export default function App() {
         setToast('Not enough cached data for a random date')
         return
       }
-      const randomTs = earliest_ts + Math.random() * (latestAllowed - earliest_ts)
-      const pool = replayBarsRef.current
-      let best = 0, minDiff = Infinity
-      for (let i = 0; i < pool.length; i++) {
-        const d = Math.abs(pool[i].ts - randomTs)
-        if (d < minDiff) { minDiff = d; best = i }
-      }
-      handleCutConfirm(best)
+      const randomTs = Math.floor(earliest_ts + Math.random() * (latestAllowed - earliest_ts))
+      // handleCutConfirm accepts a timestamp and handles fetch-or-reposition itself
+      handleCutConfirm(randomTs)
     } catch (e) {
       setToast(e.message)
     }
