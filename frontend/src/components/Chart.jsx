@@ -142,6 +142,18 @@ export default function Chart({
     }
   }, [])
 
+  // 'A' key — fit all data to screen (like TV)
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'a' || e.key === 'A') {
+        if (e.target.tagName === 'INPUT') return
+        chartRef.current?.applyOptions({ rightPriceScale: { autoScale: true } })
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   // Disable chart mouse scroll when a drawing tool is active (not cursor)
   useEffect(() => {
     if (!chartRef.current) return
@@ -227,6 +239,17 @@ export default function Chart({
         onToolChange={onToolChange}
       />
 
+      {/* Fit-to-screen button — resets zoom/scale like TV's "Auto" */}
+      <button
+        title="Fit to screen (A)"
+        onClick={() => {
+          chartRef.current?.applyOptions({ rightPriceScale: { autoScale: true } })
+        }}
+        style={fitBtnStyle}
+      >
+        ⊡
+      </button>
+
       {loading && (
         <div style={loadingOverlayStyle}>Loading…</div>
       )}
@@ -262,4 +285,25 @@ const errorOverlayStyle = {
   padding: '0 40px',
   textAlign: 'center',
   pointerEvents: 'none',
+}
+
+const fitBtnStyle = {
+  position:        'absolute',
+  bottom:          32,
+  right:           60,
+  zIndex:          20,
+  background:      '#21262d',
+  color:           '#c9d1d9',
+  border:          '1px solid #30363d',
+  borderRadius:    4,
+  width:           24,
+  height:          24,
+  display:         'flex',
+  alignItems:      'center',
+  justifyContent:  'center',
+  cursor:          'pointer',
+  fontSize:        14,
+  lineHeight:      1,
+  padding:         0,
+  opacity:         0.75,
 }
